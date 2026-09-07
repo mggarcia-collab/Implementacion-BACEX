@@ -28,13 +28,17 @@ app.use(express.json()); //para que acepte jsons
 // (el navegador les manda un header Origin por el atributo "crossorigin" del build de Vite,
 // y si se aplicara aquí, el checkeo de "solo localhost" los rechazaría con 500 en producción).
 // RENDER_EXTERNAL_URL lo define Render automáticamente con la URL pública del servicio.
+// PUBLIC_URL es el equivalente manual para otros hosts (ej. Azure Container Apps, que no
+// inyecta esa variable solo): hay que definirla a mano con el FQDN público asignado
+// (https://<app>.<region>.azurecontainerapps.io) en la configuración del Container App.
 // El rango de IP privada cubre el acceso por red local/VPN (ej. http://192.168.x.x:4000)
-// cuando el servidor corre en una PC dentro de la oficina en vez de en Render.
+// cuando el servidor corre en una PC dentro de la oficina en vez de en la nube.
 const origenesPermitidos = [
     /^http:\/\/localhost:\d+$/,
     /^http:\/\/(192\.168|10\.|172\.(1[6-9]|2\d|3[0-1]))\.[\d.]+:\d+$/
 ];
 if (process.env.RENDER_EXTERNAL_URL) origenesPermitidos.push(process.env.RENDER_EXTERNAL_URL);
+if (process.env.PUBLIC_URL) origenesPermitidos.push(process.env.PUBLIC_URL);
 
 const corsOptions = cors({
     origin: (origin, callback) => {

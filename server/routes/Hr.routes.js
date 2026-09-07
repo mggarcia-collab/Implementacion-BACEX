@@ -75,4 +75,37 @@ app.post('/hojaRutaEjemplo', requirePermission('cfo', 'cambio'), async (req, res
     }
 });
 
+// Resuelve la Aduana/Cliente de una Referencia Operativa para el módulo Cuadrilla, bajo su
+// propio permiso (en vez de reusar 'cambio') para no atar su acceso al de Cambio de Componente.
+app.post('/aduanaPorReferenciaCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, res) => {
+    try {
+        const { referencia } = req.body;
+        if (!referencia) {
+            return res.status(400).json({ Message: "La referencia operativa es requerida." });
+        }
+
+        const pool = await conexion(BasesDeDatos.HojaDeRuta);
+        const resultado = await pool.request()
+            .input('referencia', sql.VarChar, referencia)
+            .query(`
+                SELECT TOP 1
+                    NumeroHojaRuta,
+                    NumeroGestion,
+                    AduanaId,
+                    AduanaDescripcion,
+                    ClienteId,
+                    ClienteDescripcion,
+                    IsSoftDeleted
+                FROM HojaRuta
+                WHERE NumeroHojaRuta = @referencia
+            `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en aduanaPorReferenciaCuadrilla:", error);
+        return res.status(500).json({ Message: "Error al obtener datos de hoja de ruta", Error: error.message });
+    }
+});
+
 export default app;

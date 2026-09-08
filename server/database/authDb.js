@@ -1,9 +1,29 @@
 import { DatabaseSync } from "node:sqlite";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, "auth.db");
+
+// El filesystem de un contenedor es efímero: sin esto, auth.db (usuarios,
+// permisos, actividad) se resetea al contenido que quedó grabado en la imagen
+// cada vez que el contenedor se reinicia o se vuelve a desplegar. DB_DATA_DIR
+// permite apuntar a una carpeta persistente montada por el hosting (ej. en
+// Azure App Service, /home sí persiste entre reinicios/despliegues). Si no se
+// define, se usa la misma carpeta de siempre (comportamiento sin cambios en
+// desarrollo local y en el PM2 de la oficina).
+const dbDir = process.env.DB_DATA_DIR || __dirname;
+const dbPath = path.join(dbDir, "auth.db");
+const dbOriginal = path.join(__dirname, "auth.db");
+
+fs.mkdirSync(dbDir, { recursive: true });
+
+// Primera vez que se usa una carpeta persistente vacía: se parte del auth.db
+// que trae la imagen (con los usuarios ya existentes) en vez de arrancar de
+// cero sin ningún usuario para iniciar sesión.
+if (dbDir !== __dirname && !fs.existsSync(dbPath) && fs.existsSync(dbOriginal)) {
+  fs.copyFileSync(dbOriginal, dbPath);
+}
 
 export const authDb = new DatabaseSync(dbPath);
 

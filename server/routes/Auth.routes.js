@@ -102,12 +102,14 @@ router.post("/usuarios", requireAuth, requireAdmin, async (req, res) => {
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "admin",
             areaLabel: "Administración",
             moduloKey: "usuarios",
             moduloLabel: "Usuarios",
-            accion: `Creó el usuario ${nombreCompleto.trim()}`
+            accion: "Creó usuario",
+            referencia: nombreCompleto.trim()
         });
 
         return res.status(201).json({ Message: "Usuario creado con éxito", Id: usuarioId });
@@ -129,12 +131,14 @@ router.put("/usuarios/:id/permisos", requireAuth, requireAdmin, (req, res) => {
 
     const usuario = authDb.prepare(`SELECT nombre_completo FROM usuarios WHERE id = ?`).get(usuarioId);
     registrarActividad({
+        usuarioId: req.user.id,
         usuarioNombre: req.user.nombreCompleto,
         areaKey: "admin",
         areaLabel: "Administración",
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
-        accion: `Actualizó los permisos de ${usuario?.nombre_completo || "un usuario"}`
+        accion: "Actualizó permisos",
+        referencia: usuario?.nombre_completo || ""
     });
 
     return res.json({ Message: "Permisos actualizados con éxito" });
@@ -158,12 +162,14 @@ router.put("/usuarios/:id/password", requireAuth, requireAdmin, async (req, res)
         authDb.prepare(`UPDATE usuarios SET password_hash = ? WHERE id = ?`).run(passwordHash, usuarioId);
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "admin",
             areaLabel: "Administración",
             moduloKey: "usuarios",
             moduloLabel: "Usuarios",
-            accion: `Cambió la contraseña de ${usuario.nombre_completo}`
+            accion: "Cambió contraseña",
+            referencia: usuario.nombre_completo
         });
 
         return res.json({ Message: "Contraseña actualizada con éxito" });
@@ -191,12 +197,14 @@ router.put("/usuarios/:id/perfil", requireAuth, requireAdmin, (req, res) => {
         .run(nombreCompleto.trim(), correo?.trim() || null, nuevoPersonaId, usuarioId);
 
     registrarActividad({
+        usuarioId: req.user.id,
         usuarioNombre: req.user.nombreCompleto,
         areaKey: "admin",
         areaLabel: "Administración",
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
-        accion: `Actualizó el perfil de ${nombreCompleto.trim()}`
+        accion: "Actualizó perfil",
+        referencia: nombreCompleto.trim()
     });
 
     return res.json({ Message: "Perfil actualizado con éxito" });
@@ -209,12 +217,14 @@ router.put("/usuarios/:id/activo", requireAuth, requireAdmin, (req, res) => {
 
     const usuario = authDb.prepare(`SELECT nombre_completo FROM usuarios WHERE id = ?`).get(usuarioId);
     registrarActividad({
+        usuarioId: req.user.id,
         usuarioNombre: req.user.nombreCompleto,
         areaKey: "admin",
         areaLabel: "Administración",
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
-        accion: `${activo ? "Activó" : "Desactivó"} al usuario ${usuario?.nombre_completo || ""}`.trim()
+        accion: activo ? "Activó usuario" : "Desactivó usuario",
+        referencia: usuario?.nombre_completo || ""
     });
 
     return res.json({ Message: activo ? "Usuario activado" : "Usuario desactivado" });

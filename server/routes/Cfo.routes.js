@@ -133,12 +133,14 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "salesorder",
             moduloLabel: "Habilitar SalesOrder",
-            accion: `Habilitó la Sales Order ${ReferenciaOperativa}`
+            accion: "Habilitó Sales Order",
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Sales Order Habilitada con éxito", Data: data });
@@ -309,7 +311,7 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
         const validacion = await pool.request()
             .input('documentoId', sql.UniqueIdentifier, DocumentoId)
             .query(`
-                SELECT [ReembolsoStatus_Value], [DueñoDocumento_Value]
+                SELECT [ReembolsoStatus_Value], [DueñoDocumento_Value], [ReferenciaOperativa]
                 FROM [dbo].[Documento]
                 WHERE [Id] = @documentoId
             `);
@@ -319,6 +321,7 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
         }
 
         const status = String(validacion.recordset[0].ReembolsoStatus_Value).trim();
+        const referenciaOperativa = validacion.recordset[0].ReferenciaOperativa;
 
         // 2. Aplicar regla de negocio (Solo permitir si el estado es 0 = Inhabilitado)
         if (status === '1') {
@@ -356,12 +359,14 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
         // Azure ya actualiza tanto el estado como el dueño (Vesta → Cliente) en su respuesta;
         // no hace falta (ni tenemos permiso de UPDATE) tocar la tabla directamente nosotros.
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
-            accion: `Habilitó el documento ${DocumentoId}`
+            accion: "Habilitó documento",
+            referencia: referenciaOperativa || DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento habilitado con éxito", Data: data });
@@ -388,7 +393,7 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
         const validacion = await pool.request()
             .input('documentoId', sql.UniqueIdentifier, DocumentoId)
             .query(`
-                SELECT [ReembolsoStatus_Value], [DueñoDocumento_Value]
+                SELECT [ReembolsoStatus_Value], [DueñoDocumento_Value], [ReferenciaOperativa]
                 FROM [dbo].[Documento]
                 WHERE [Id] = @documentoId
             `);
@@ -398,6 +403,7 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
         }
 
         const status = String(validacion.recordset[0].ReembolsoStatus_Value).trim();
+        const referenciaOperativa = validacion.recordset[0].ReferenciaOperativa;
 
         // 2. Aplicar regla de negocio (Solo permitir si el estado es 1 = Habilitado)
         if (status === '0') {
@@ -433,12 +439,14 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
-            accion: `Deshabilitó el documento ${DocumentoId}`
+            accion: "Deshabilitó documento",
+            referencia: referenciaOperativa || DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento deshabilitado con éxito", Data: data });
@@ -594,7 +602,7 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
         const validacion = await pool.request()
             .input('documentoId', sql.UniqueIdentifier, DocumentoId)
             .query(`
-                SELECT [IsSoftDeleted], [Discriminator]
+                SELECT [IsSoftDeleted], [Discriminator], [ReferenciaOperativa]
                 FROM [dbo].[Documento]
                 WHERE [Id] = @documentoId
             `);
@@ -603,7 +611,7 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
             return res.status(404).json({ Message: "No se encontró el documento." });
         }
 
-        const { IsSoftDeleted, Discriminator } = validacion.recordset[0];
+        const { IsSoftDeleted, Discriminator, ReferenciaOperativa: referenciaOperativa } = validacion.recordset[0];
 
         // 2. Aplicar reglas de negocio
         if (IsSoftDeleted) {
@@ -638,12 +646,14 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "elimDoc",
             moduloLabel: "Eliminar Documento",
-            accion: `Eliminó el documento ${DocumentoId}`
+            accion: "Eliminó documento",
+            referencia: referenciaOperativa || DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
@@ -715,7 +725,7 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
         const validacion = await pool.request()
             .input('id', sql.UniqueIdentifier, Id)
             .query(`
-                SELECT [IsSoftDeleted]
+                SELECT [IsSoftDeleted], [CodigoInterno]
                 FROM [dbo].[ContraRecibo]
                 WHERE [Id] = @id
             `);
@@ -726,6 +736,7 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
         if (validacion.recordset[0].IsSoftDeleted) {
             return res.status(400).json({ Message: "El contrarecibo ya fue eliminado." });
         }
+        const codigoInterno = validacion.recordset[0].CodigoInterno;
 
         // 2. Si pasa la validación, consumir la API externa
         const resp = await fetch("https://cfows.azurewebsites.net/api/Contrarecibo/Delete", {
@@ -750,12 +761,14 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "contrarecibo",
             moduloLabel: "Eliminar ContraRecibo",
-            accion: `Eliminó el contrarecibo ${Id}`
+            accion: "Eliminó contrarecibo",
+            referencia: codigoInterno || Id
         });
 
         return res.status(200).json({ Message: "Contrarecibo eliminado con éxito", Data: data });
@@ -867,7 +880,7 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
             return `@${nombre}`;
         });
         const validacion = await request.query(`
-            SELECT Id, TotalMonto
+            SELECT Id, TotalMonto, ReferenciaOperativa
             FROM Documento
             WHERE Id IN (${parametros.join(", ")})
         `);
@@ -878,6 +891,8 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
                 Message: `No se puede redondear: ${noRedondeables.length} documento(s) no tienen un monto válido.`
             });
         }
+
+        const referenciasOperativas = [...new Set(validacion.recordset.map((doc) => doc.ReferenciaOperativa).filter(Boolean))];
 
         const resp = await fetch("https://cfows.azurewebsites.net/api/Documento/Redondeo", {
             method: "POST",
@@ -901,12 +916,14 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "redondeo",
             moduloLabel: "Redondeo de Documentos",
-            accion: `Redondeó ${Ids.length} documento(s)`
+            accion: `Redondeó ${Ids.length} documento(s)`,
+            referencia: referenciasOperativas.join(", ") || Ids.join(", ")
         });
 
         return res.status(200).json({ Message: "Documentos redondeados con éxito", Data: data });
@@ -1014,6 +1031,19 @@ app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req
             return res.status(400).json({ Message: "Debe indicar el motivo del cambio." });
         }
 
+        // Solo para la bitácora: la Referencia Operativa es más útil que el
+        // SalesOrderDetalleId (un GUID interno) para saber a qué se le hizo el cambio.
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const infoSalesOrder = await pool.request()
+            .input('salesOrderDetalleId', sql.UniqueIdentifier, SalesOrderDetalleId)
+            .query(`
+                SELECT SO.ReferenciaOperativa
+                FROM [dbo].[SalesOrderDetalle] SD
+                LEFT JOIN [dbo].[SalesOrder] SO ON SO.id = SD.salesOrderId
+                WHERE SD.id = @salesOrderDetalleId
+            `);
+        const referenciaOperativa = infoSalesOrder.recordset[0]?.ReferenciaOperativa;
+
         const resp = await fetch("https://cfows.azurewebsites.net/api/SalesOrder/UpdateComponenteList", {
             method: "POST",
             headers: {
@@ -1042,12 +1072,14 @@ app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "cambio",
             moduloLabel: "Cambio de Componente",
-            accion: `Actualizó el componente del detalle ${SalesOrderDetalleId}`
+            accion: "Actualizó componente",
+            referencia: referenciaOperativa || SalesOrderDetalleId
         });
 
         return res.status(200).json({ Message: "Componente actualizado con éxito", Data: data });
@@ -1132,12 +1164,14 @@ app.post('/crearDocumentoProvisionalNic', requirePermission('cfo', 'docProvision
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "docProvisionalNic",
             moduloLabel: "Documento Provisional NIC (Proveedores)",
-            accion: `Creó un Documento Provisional NIC para ${ReferenciaOperativa}`
+            accion: "Creó Documento Provisional NIC",
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Documento Provisional creado con éxito", Data: data });
@@ -1332,12 +1366,14 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "anulacionFacturas",
             moduloLabel: "Anulación de Facturas",
-            accion: `Anuló ${facturas.length} factura(s): ${facturas.join(", ")}`
+            accion: `Anuló ${facturas.length} factura(s)`,
+            referencia: facturas.join(", ")
         });
 
         return res.status(200).json({ Message: "Factura(s) anulada(s) con éxito", Data: data });
@@ -1525,12 +1561,14 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "cuadrilla",
             moduloLabel: "Cuadrilla",
-            accion: `Creó Documento Provisional + Línea Material (Cuadrilla, ${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}) para ${ReferenciaOperativa} — Aduana ${aduana.label}`
+            accion: `Creó Cuadrilla (${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}, Aduana ${aduana.label})`,
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Documento Provisional + Línea Material creado con éxito", Data: data });

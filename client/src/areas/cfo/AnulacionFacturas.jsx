@@ -200,10 +200,12 @@ export default function AnulacionFacturas() {
     // configuración regional de quien lo abra (en español, Excel espera ";" porque usa
     // "," como separador decimal — por eso antes se veía todo apretujado en una sola columna).
     const csv = ["sep=;", encabezado, ...filas].join("\n");
-    // El BOM (﻿) es necesario para que Excel en Windows detecte UTF-8 y muestre
-    // bien los acentos (Número, Reembolso, etc.); sin él, suele verlos como símbolos raros.
-    const bom = "﻿";
-    const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+    // El BOM (bytes EF BB BF, no un carácter especial en el código fuente, que se
+    // puede corromper al guardar el archivo) es necesario para que Excel en Windows
+    // detecte UTF-8 y muestre bien los acentos (Número, Reembolso, etc.); sin él,
+    // suele verlos como símbolos raros (Ã©, Ã³, etc.).
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const enlace = document.createElement("a");
     enlace.href = url;

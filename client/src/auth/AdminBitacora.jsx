@@ -62,31 +62,65 @@ export default function AdminBitacora() {
     setHasta("");
   };
 
-  const handleDescargarExcel = () => {
+  // Se genera un .xlsx real (no CSV) para tener control real de formato
+  // (negrita, color, centrado) y porque un archivo Excel nativo no depende de
+  // que Excel adivine bien la codificación de caracteres al abrirlo, a
+  // diferencia de un CSV. exceljs pesa bastante, así que se carga solo al
+  // pedir la descarga (no en el bundle principal, que usan todos los usuarios).
+  const handleDescargarExcel = async () => {
     if (actividadesFiltradas.length === 0) {
       showToast("No hay actividad para descargar", "warn");
       return;
     }
-    const escapar = (valor) => `"${String(valor ?? "").replace(/"/g, '""')}"`;
-    const encabezado = ["Nombre", "Referencia", "Actividad", "Módulo", "Fecha y hora"].map(escapar).join(";");
-    const filas = actividadesFiltradas.map((a) =>
-      [a.usuarioNombre, a.referencia || "", a.accion, a.moduloLabel || "", formatoFecha.format(parsearFecha(a.fecha))]
-        .map(escapar)
-        .join(";")
-    );
-    // "sep=;" le dice a Excel qué separador usar sin depender de la configuración
-    // regional de quien lo abra. El BOM (bytes EF BB BF, no un carácter especial
-    // en el código fuente, que se puede corromper al guardar el archivo) le dice
-    // a Excel que el contenido es UTF-8; sin esto, Excel lo abre como ANSI y los
-    // acentos/eñes salen como símbolos raros (Ã©, Ã³, etc.).
-    const csv = ["sep=;", encabezado, ...filas].join("\n");
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const blob = new Blob([bom, csv], { type: "text/csv;charset=utf-8;" });
+
+    const { default: ExcelJS } = await import("exceljs");
+
+    const columnas = [
+      { header: "Nombre", key: "nombre", width: 30 },
+      { header: "Referencia", key: "referencia", width: 20 },
+      { header: "Actividad", key: "actividad", width: 30 },
+      { header: "Módulo", key: "modulo", width: 22 },
+      { header: "Fecha y hora", key: "fecha", width: 22 },
+    ];
+
+    const workbook = new ExcelJS.Workbook();
+    const hoja = workbook.addWorksheet("Bitácora");
+    hoja.columns = columnas;
+
+    actividadesFiltradas.forEach((a) => {
+      hoja.addRow({
+        nombre: a.usuarioNombre,
+        referencia: a.referencia || "",
+        actividad: a.accion,
+        modulo: a.moduloLabel || "",
+        fecha: formatoFecha.format(parsearFecha(a.fecha)),
+      });
+    });
+
+    // Ancho de columna según el texto más largo de cada una (encabezado o dato),
+    // en vez de un ancho fijo que puede quedar corto o dejar espacio de más.
+    hoja.columns.forEach((columna) => {
+      let maximo = String(columna.header).length;
+      columna.eachCell?.({ includeEmpty: false }, (celda) => {
+        maximo = Math.max(maximo, String(celda.value ?? "").length);
+      });
+      columna.width = Math.max(12, Math.min(maximo + 2, 50));
+    });
+
+    const filaEncabezado = hoja.getRow(1);
+    filaEncabezado.eachCell((celda) => {
+      celda.font = { bold: true };
+      celda.alignment = { horizontal: "center", vertical: "middle" };
+      celda.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFBDD7EE" } };
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const enlace = document.createElement("a");
     enlace.href = url;
     const sufijo = desde || hasta ? `_${desde || "inicio"}_a_${hasta || "hoy"}` : "";
-    enlace.download = `bitacora${sufijo}.csv`;
+    enlace.download = `bitacora${sufijo}.xlsx`;
     document.body.appendChild(enlace);
     enlace.click();
     document.body.removeChild(enlace);

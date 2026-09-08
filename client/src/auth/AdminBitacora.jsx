@@ -68,7 +68,7 @@ export default function AdminBitacora() {
       return;
     }
     const escapar = (valor) => `"${String(valor ?? "").replace(/"/g, '""')}"`;
-    const encabezado = ["Nombre", "Referencia o trámite", "Qué realizó", "Módulo", "Fecha y hora"].map(escapar).join(";");
+    const encabezado = ["Nombre", "Referencia", "Actividad", "Módulo", "Fecha y hora"].map(escapar).join(";");
     const filas = actividadesFiltradas.map((a) =>
       [a.usuarioNombre, a.referencia || "", a.accion, a.moduloLabel || "", formatoFecha.format(parsearFecha(a.fecha))]
         .map(escapar)
@@ -128,8 +128,8 @@ export default function AdminBitacora() {
           <thead>
             <tr>
               <th>Nombre</th>
-              <th>Referencia o trámite</th>
-              <th>Qué realizó</th>
+              <th>Referencia</th>
+              <th>Actividad</th>
               <th>Módulo</th>
               <th>Fecha y hora</th>
             </tr>

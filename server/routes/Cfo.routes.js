@@ -1185,4 +1185,197 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
     }
 });
 
+// Resuelve, a partir de la Referencia Operativa, los dos IDs que "AddLineaMaterialNewApp"
+// necesita y que NO dependen de la Aduana: Componente.SegmentoId (Segmentos[0].Id) y el
+// MaterialVariableSegmentoId del material "Cuadrilla" dentro de ese Componente (se probó con
+// 2 referencias/negociaciones distintas y ambos valores salieron iguales en las dos, por lo
+// que parecen fijos/globales — pero se resuelven en vivo por si alguna negociación no tiene
+// Cuadrilla configurada, en vez de asumirlos como constante).
+app.post('/cuadrillaPorReferencia', requirePermission('cfo', 'cuadrilla'), async (req, res) => {
+    try {
+        const { referencia } = req.body;
+        if (!referencia) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('referencia', sql.VarChar, referencia)
+            .query(`
+                SELECT TOP 1
+                    C.Id AS ComponenteId,
+                    C.SegmentoId,
+                    C.Descripcion AS ComponenteDescripcion
+                FROM [dbo].[SalesOrderDetalle] SD
+                LEFT JOIN [dbo].[SalesOrder] SO ON SO.id = SD.salesOrderId
+                LEFT JOIN [dbo].[Componente] C ON C.ID = SD.ComponenteID
+                WHERE SO.ReferenciaOperativa = @referencia
+                  AND SO.IsSoftDeleted = 0
+            `);
+
+        const fila = resultado.recordset[0];
+        if (!fila || !fila.ComponenteId) {
+            return res.status(404).json({ Message: "No se encontró un Componente para esa Referencia Operativa." });
+        }
+
+        // "Cuadrilla" del lado del Componente (da el Valor a cobrar) y del ComponenteSELF
+        // (da el Costo interno) — mismo MaterialVariableSegmentoId en ambos casos, solo
+        // cambia el MaterialVariableValorId (y por lo tanto sus escalas).
+        const cuadrilla = await pool.request()
+            .input('cid', sql.UniqueIdentifier, fila.ComponenteId)
+            .query(`
+                SELECT MVV.Id AS MaterialVariableValorId, MS.ID AS MaterialVariableSegmentoId, MS.Currency_Value
+                FROM Componente C
+                LEFT JOIN MaterialVariableValor MVV ON MVV.ComponenteId = C.Id
+                LEFT JOIN MaterialVariableSegmento MS ON MS.ID = MVV.MaterialVariableSegmentoId
+                LEFT JOIN MaterialVariable MF ON MF.ID = MS.MaterialVariableId
+                WHERE C.Id = @cid AND MVV.IsSoftDeleted = 0 AND MF.Descripcion = 'Cuadrilla'
+            `);
+        const filaCuadrilla = cuadrilla.recordset[0];
+        if (!filaCuadrilla) {
+            return res.status(404).json({ Message: "Esa Referencia Operativa no tiene 'Cuadrilla' configurada en su negociación." });
+        }
+
+        const cuadrillaSelf = await pool.request()
+            .input('cid', sql.UniqueIdentifier, fila.ComponenteId)
+            .query(`
+                SELECT MVV.Id AS MaterialVariableValorId
+                FROM Componente C
+                LEFT JOIN MaterialVariableValor MVV ON MVV.ComponenteId = C.Id
+                LEFT JOIN MaterialVariableSegmento MS ON MS.ID = MVV.MaterialVariableSegmentoId
+                LEFT JOIN MaterialVariable MF ON MF.ID = MS.MaterialVariableId
+                WHERE C.ComponenteId = @cid AND MVV.IsSoftDeleted = 0 AND MF.Descripcion = 'Cuadrilla'
+            `);
+        const filaCuadrillaSelf = cuadrillaSelf.recordset[0];
+
+        // Escalas: cada Orden (1=Muestreo, 2=Parcial, 3=Completa) trae su propio Valor.
+        // El Costo sale de la escala equivalente (mismo Orden) del lado ComponenteSELF.
+        const idsEscala = [filaCuadrilla.MaterialVariableValorId, filaCuadrillaSelf?.MaterialVariableValorId].filter(Boolean);
+        const requestEscalas = pool.request();
+        const paramsEscala = idsEscala.map((id, i) => {
+            const nombre = `esc${i}`;
+            requestEscalas.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
+        });
+        const escalasResultado = await requestEscalas.query(`
+            SELECT MaterialVariableValorId, Orden, Valor
+            FROM [dbo].[MaterialVariableValorEscala]
+            WHERE MaterialVariableValorId IN (${paramsEscala.join(", ")}) AND IsSoftDeleted = 0
+        `);
+
+        const NOMBRES_ORDEN = { 1: "Muestreo", 2: "Parcial", 3: "Completa" };
+        const escalasComponente = escalasResultado.recordset.filter((e) => e.MaterialVariableValorId === filaCuadrilla.MaterialVariableValorId);
+        const escalasSelf = escalasResultado.recordset.filter((e) => e.MaterialVariableValorId === filaCuadrillaSelf?.MaterialVariableValorId);
+        const escalas = escalasComponente.map((e) => ({
+            Orden: e.Orden,
+            Nombre: NOMBRES_ORDEN[e.Orden] || `Escala ${e.Orden}`,
+            Valor: e.Valor,
+            Costo: escalasSelf.find((s) => s.Orden === e.Orden)?.Valor ?? null
+        })).sort((a, b) => a.Orden - b.Orden);
+
+        // Mismos códigos de moneda usados en el resto del sistema (ej. las respuestas de
+        // Azure ya traen Moneda: { Value: 340, DisplayName: 'HNL' }).
+        const MONEDAS = { 340: "HNL", 840: "USD" };
+        const monedaValue = filaCuadrilla.Currency_Value;
+
+        return res.json({
+            ComponenteId: fila.ComponenteId,
+            ComponenteDescripcion: fila.ComponenteDescripcion,
+            SegmentoId: fila.SegmentoId,
+            MaterialVariableSegmentoId: filaCuadrilla.MaterialVariableSegmentoId,
+            MonedaValue: monedaValue,
+            Moneda: MONEDAS[monedaValue] || (monedaValue != null ? String(monedaValue) : "—"),
+            Escalas: escalas
+        });
+
+    } catch (error) {
+        console.error("Error en cuadrillaPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al obtener datos de Cuadrilla", Error: error.message });
+    }
+});
+
+// CreatedBy y ProveedorId por Aduana para el módulo Cuadrilla — dato fijo proporcionado
+// directamente (no hay tabla en BD que los relacione de forma confiable, ver AduanaDescripcion
+// que trae texto inconsistente). El usuario elige la Aduana manualmente para evitar mandar el
+// ProveedorId/CreatedBy equivocado si el texto de la Referencia no calza limpio con ninguna.
+const ADUANAS_CUADRILLA = {
+    elPoy: { label: "El Poy", createdBy: "93DDFC85-4BC6-4B77-874B-15D8383F50C8", proveedorId: "48367417-0D98-40D5-82B6-22E0EBE314B9" },
+    corinto: { label: "Corinto", createdBy: "1E3C0993-CAEB-46A4-BFB7-1D9CDD0A2F59", proveedorId: "66304F92-C28A-46FB-9E6F-219104CDFB07" },
+    lasManos: { label: "Las Manos", createdBy: "74BEDB3B-9561-4983-A4F4-13E0C26AF28D", proveedorId: "80C8DBBC-6767-46AA-9EB0-14D398EA0B69" },
+    laMesa: { label: "La Mesa", createdBy: "AEE24082-F052-4851-AD73-0F62B3102E0C", proveedorId: "94ABFBAB-40D1-4C63-9DD0-26DC994CC574" },
+    elFlorido: { label: "El Florido", createdBy: "7656E091-4C67-4155-B192-15C8138215F0", proveedorId: "A7DE0768-3AEC-4B97-A8F8-14D56F506575" },
+    guasaule: { label: "Guasaule", createdBy: "F5D934A6-55BD-47E7-9041-13E0C29C2137", proveedorId: "D2887BF9-4FCD-49F7-991F-170CFCE2B884" },
+    amatillo: { label: "Amatillo", createdBy: "B2EA3ED7-2130-4D88-92CA-13E0C1DC292E", proveedorId: "E7EE603E-BC46-4017-8A3D-16CC73903C7A" },
+};
+
+app.get('/aduanasCuadrilla', requirePermission('cfo', 'cuadrilla'), (req, res) => {
+    res.json(Object.entries(ADUANAS_CUADRILLA).map(([key, a]) => ({ key, label: a.label })));
+});
+
+app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, res) => {
+    try {
+        const { ReferenciaOperativa, AduanaKey, SegmentoId, MaterialVariableSegmentoId, Parametro } = req.body;
+
+        if (!ReferenciaOperativa) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        const aduana = ADUANAS_CUADRILLA[AduanaKey];
+        if (!aduana) {
+            return res.status(400).json({ Message: "Debe seleccionar una Aduana válida." });
+        }
+        if (!SegmentoId || !MaterialVariableSegmentoId) {
+            return res.status(400).json({ Message: "Faltan datos de Cuadrilla resueltos para esta referencia. Vuelva a buscarla." });
+        }
+        if (![1, 2, 3].includes(Number(Parametro))) {
+            return res.status(400).json({ Message: "Debe seleccionar el tipo de escala (Muestreo, Parcial o Completa)." });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/SalesOrder/AddLineaMaterialNewApp", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                ReferenciaOperativa,
+                Tipo: "1",
+                CreatedBy: aduana.createdBy,
+                Segmentos: [{
+                    Id: SegmentoId,
+                    MaterialVariableSegmentos: [{ Id: MaterialVariableSegmentoId, Parametro: Number(Parametro) }],
+                    ProveedorId: aduana.proveedorId,
+                    TenantId: "30d1014c-d443-42ee-8015-005fb0d9fa00"
+                }]
+            })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`SalesOrder/AddLineaMaterialNewApp → HTTP ${resp.status} para ${ReferenciaOperativa}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`SalesOrder/AddLineaMaterialNewApp → ${ReferenciaOperativa}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "cuadrilla",
+            moduloLabel: "Cuadrilla",
+            accion: `Creó Documento Provisional + Línea Material (Cuadrilla, ${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}) para ${ReferenciaOperativa} — Aduana ${aduana.label}`
+        });
+
+        return res.status(200).json({ Message: "Documento Provisional + Línea Material creado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearCuadrilla:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 export default app;

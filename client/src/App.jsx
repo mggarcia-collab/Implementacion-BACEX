@@ -339,7 +339,7 @@ function AppShell() {
                 </div>
 
                 <div style={{ position: "relative", zIndex: 1 }}>
-                  <ActiveComponent />
+                  <ActiveComponent onNavigate={handleSelectModule} />
                 </div>
               </div>
             </>

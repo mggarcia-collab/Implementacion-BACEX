@@ -75,10 +75,13 @@ export default function AdminBitacora() {
         .join(";")
     );
     // "sep=;" le dice a Excel qué separador usar sin depender de la configuración
-    // regional de quien lo abra; el BOM asegura que se vean bien los acentos.
+    // regional de quien lo abra. El BOM (bytes EF BB BF, no un carácter especial
+    // en el código fuente, que se puede corromper al guardar el archivo) le dice
+    // a Excel que el contenido es UTF-8; sin esto, Excel lo abre como ANSI y los
+    // acentos/eñes salen como símbolos raros (Ã©, Ã³, etc.).
     const csv = ["sep=;", encabezado, ...filas].join("\n");
-    const bom = "﻿";
-    const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const enlace = document.createElement("a");
     enlace.href = url;

@@ -95,6 +95,19 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
             return res.status(400).json({ Message: "Debe indicar si queda Vigente (Sí/No)." });
         }
 
+        // Solo para la bitácora: la Referencia Operativa es más útil que el
+        // AnalisisId (un GUID interno) para saber a qué se le hizo el cambio.
+        const pool = await conexion(BasesDeDatos.AnalisisDeRed);
+        const infoAnalisis = await pool.request()
+            .input('analisisId', sql.UniqueIdentifier, analisisId)
+            .query(`
+                SELECT ro.Referencia
+                FROM Analisis a
+                LEFT JOIN ReferenciaOperativa ro ON ro.Id = a.ReferenciaOperativaId
+                WHERE a.Id = @analisisId
+            `);
+        const referenciaOperativa = infoAnalisis.recordset[0]?.Referencia;
+
         const resp = await fetch("https://analisisderedapi.vesta-accelerate.com/api/AnalisisCrud/ActualizarAnalisisAVigente", {
             method: "POST",
             headers: {
@@ -125,7 +138,7 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
             moduloKey: "matriz",
             moduloLabel: "Matriz",
             accion: `Marcó Análisis como ${vigente ? "Vigente" : "No Vigente"}`,
-            referencia: analisisId
+            referencia: referenciaOperativa || analisisId
         });
 
         return res.status(200).json({ Message: "Análisis actualizado con éxito", Data: data });
@@ -179,6 +192,14 @@ app.post('/actualizarHaSidoEvaluado', requirePermission('red', 'matriz'), async 
             return res.status(400).json({ Message: "Debe indicar el valor de HaSidoEvaluado (Sí/No)." });
         }
 
+        // Solo para la bitácora: la Referencia (texto) es más útil que el
+        // ReferenciaOperativaId (un GUID interno) para saber a qué se le hizo el cambio.
+        const pool = await conexion(BasesDeDatos.AnalisisDeRed);
+        const infoReferencia = await pool.request()
+            .input('referenciaOperativaId', sql.UniqueIdentifier, referenciaOperativaId)
+            .query(`SELECT Referencia FROM ReferenciaOperativa WHERE Id = @referenciaOperativaId`);
+        const referenciaTexto = infoReferencia.recordset[0]?.Referencia;
+
         const resp = await fetch("https://analisisderedapi.vesta-accelerate.com/api/ReferenciaOperativaCrudApi/ActualizarHaSidoEvaluado", {
             method: "POST",
             headers: {
@@ -209,7 +230,7 @@ app.post('/actualizarHaSidoEvaluado', requirePermission('red', 'matriz'), async 
             moduloKey: "matriz",
             moduloLabel: "Matriz",
             accion: `Marcó Referencia Operativa como ${haSidoEvaluado ? "Evaluada" : "No Evaluada"}`,
-            referencia: referenciaOperativaId
+            referencia: referenciaTexto || referenciaOperativaId
         });
 
         return res.status(200).json({ Message: "Referencia Operativa actualizada con éxito", Data: data });

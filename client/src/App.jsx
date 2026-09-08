@@ -5,6 +5,7 @@ import { ToastProvider } from "./components/Toast.jsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.jsx";
 import Login from "./auth/Login.jsx";
 import AdminUsuarios, { meta as adminUsuariosMeta } from "./auth/AdminUsuarios.jsx";
+import AdminBitacora, { meta as adminBitacoraMeta } from "./auth/AdminBitacora.jsx";
 import ActividadReciente from "./components/ActividadReciente.jsx";
 
 const ADMIN_KEY = "__admin__";
@@ -24,6 +25,7 @@ const adminArea = {
   label: "Administración",
   modules: {
     usuarios: { ...adminUsuariosMeta, Component: AdminUsuarios },
+    bitacora: { ...adminBitacoraMeta, Component: AdminBitacora },
   },
 };
 

@@ -72,6 +72,23 @@ try {
 } catch {
   // La columna ya existe, no hay nada que hacer.
 }
+// usuario_id en actividad: permite filtrar "solo lo mío" de forma confiable (por id,
+// no por el nombre guardado como texto) para que cada usuario no-admin vea únicamente
+// su propia actividad, mientras un admin sigue viendo la de todos.
+try {
+  authDb.exec(`ALTER TABLE actividad ADD COLUMN usuario_id INTEGER`);
+} catch {
+  // La columna ya existe, no hay nada que hacer.
+}
+// referencia guarda el dato puntual sobre el que se actuó (referencia operativa,
+// número de factura, nombre del usuario afectado, etc.), separado del texto de
+// "accion" (el verbo), para que la bitácora/Excel tengan una columna propia de
+// "Referencia o trámite" en vez de un solo texto largo mezclando todo.
+try {
+  authDb.exec(`ALTER TABLE actividad ADD COLUMN referencia TEXT`);
+} catch {
+  // La columna ya existe, no hay nada que hacer.
+}
 
 export function getPermisosDeUsuario(usuarioId) {
   return authDb
@@ -79,13 +96,14 @@ export function getPermisosDeUsuario(usuarioId) {
     .all(usuarioId);
 }
 
-// Registro de actividad para el widget "Actividad reciente" de Inicio. Se llama desde
-// las rutas después de que una acción se aplicó con éxito de verdad (no antes de validar).
-export function registrarActividad({ usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion }) {
+// Registro de actividad para el widget "Actividad reciente" de Inicio y la bitácora
+// completa de Administración. Se llama desde las rutas después de que una acción se
+// aplicó con éxito de verdad (no antes de validar).
+export function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia }) {
   try {
     authDb
-      .prepare(`INSERT INTO actividad (usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion);
+      .prepare(`INSERT INTO actividad (usuario_id, usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion, referencia) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(usuarioId || null, usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion, referencia || null);
   } catch (error) {
     console.error("Error al registrar actividad:", error);
   }

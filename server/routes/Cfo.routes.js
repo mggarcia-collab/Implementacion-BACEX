@@ -82,12 +82,14 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "salesorder",
             moduloLabel: "Habilitar SalesOrder",
-            accion: `Habilitó la Sales Order ${ReferenciaOperativa}`
+            accion: "Habilitó Sales Order",
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Sales Order Habilitada con éxito", Data: data });
@@ -305,12 +307,14 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
         // Azure ya actualiza tanto el estado como el dueño (Vesta → Cliente) en su respuesta;
         // no hace falta (ni tenemos permiso de UPDATE) tocar la tabla directamente nosotros.
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
-            accion: `Habilitó el documento ${DocumentoId}`
+            accion: "Habilitó documento",
+            referencia: DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento habilitado con éxito", Data: data });
@@ -382,12 +386,14 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
-            accion: `Deshabilitó el documento ${DocumentoId}`
+            accion: "Deshabilitó documento",
+            referencia: DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento deshabilitado con éxito", Data: data });
@@ -581,12 +587,14 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "elimDoc",
             moduloLabel: "Eliminar Documento",
-            accion: `Eliminó el documento ${DocumentoId}`
+            accion: "Eliminó documento",
+            referencia: DocumentoId
         });
 
         return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
@@ -693,12 +701,14 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "contrarecibo",
             moduloLabel: "Eliminar ContraRecibo",
-            accion: `Eliminó el contrarecibo ${Id}`
+            accion: "Eliminó contrarecibo",
+            referencia: Id
         });
 
         return res.status(200).json({ Message: "Contrarecibo eliminado con éxito", Data: data });
@@ -844,12 +854,14 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "redondeo",
             moduloLabel: "Redondeo de Documentos",
-            accion: `Redondeó ${Ids.length} documento(s)`
+            accion: `Redondeó ${Ids.length} documento(s)`,
+            referencia: Ids.join(", ")
         });
 
         return res.status(200).json({ Message: "Documentos redondeados con éxito", Data: data });
@@ -985,12 +997,14 @@ app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "cambio",
             moduloLabel: "Cambio de Componente",
-            accion: `Actualizó el componente del detalle ${SalesOrderDetalleId}`
+            accion: "Actualizó componente",
+            referencia: SalesOrderDetalleId
         });
 
         return res.status(200).json({ Message: "Componente actualizado con éxito", Data: data });
@@ -1075,12 +1089,14 @@ app.post('/crearDocumentoProvisionalNic', requirePermission('cfo', 'docProvision
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "docProvisionalNic",
             moduloLabel: "Documento Provisional NIC (Proveedores)",
-            accion: `Creó un Documento Provisional NIC para ${ReferenciaOperativa}`
+            accion: "Creó Documento Provisional NIC",
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Documento Provisional creado con éxito", Data: data });
@@ -1275,12 +1291,14 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "anulacionFacturas",
             moduloLabel: "Anulación de Facturas",
-            accion: `Anuló ${facturas.length} factura(s): ${facturas.join(", ")}`
+            accion: `Anuló ${facturas.length} factura(s)`,
+            referencia: facturas.join(", ")
         });
 
         return res.status(200).json({ Message: "Factura(s) anulada(s) con éxito", Data: data });
@@ -1468,12 +1486,14 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "cfo",
             areaLabel: "CFO",
             moduloKey: "cuadrilla",
             moduloLabel: "Cuadrilla",
-            accion: `Creó Documento Provisional + Línea Material (Cuadrilla, ${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}) para ${ReferenciaOperativa} — Aduana ${aduana.label}`
+            accion: `Creó Cuadrilla (${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}, Aduana ${aduana.label})`,
+            referencia: ReferenciaOperativa
         });
 
         return res.status(200).json({ Message: "Documento Provisional + Línea Material creado con éxito", Data: data });

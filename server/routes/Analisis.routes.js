@@ -118,12 +118,14 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "red",
             areaLabel: "Análisis de Red",
             moduloKey: "matriz",
             moduloLabel: "Matriz",
-            accion: `Marcó el Análisis ${analisisId} como ${vigente ? "Vigente" : "No Vigente"}`
+            accion: `Marcó Análisis como ${vigente ? "Vigente" : "No Vigente"}`,
+            referencia: analisisId
         });
 
         return res.status(200).json({ Message: "Análisis actualizado con éxito", Data: data });
@@ -200,12 +202,14 @@ app.post('/actualizarHaSidoEvaluado', requirePermission('red', 'matriz'), async 
         }
 
         registrarActividad({
+            usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
             areaKey: "red",
             areaLabel: "Análisis de Red",
             moduloKey: "matriz",
             moduloLabel: "Matriz",
-            accion: `Marcó la Referencia Operativa ${referenciaOperativaId} como ${haSidoEvaluado ? "Evaluada" : "No Evaluada"}`
+            accion: `Marcó Referencia Operativa como ${haSidoEvaluado ? "Evaluada" : "No Evaluada"}`,
+            referencia: referenciaOperativaId
         });
 
         return res.status(200).json({ Message: "Referencia Operativa actualizada con éxito", Data: data });

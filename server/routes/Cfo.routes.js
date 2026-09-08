@@ -21,6 +21,57 @@ function puedeRedondear(monto) {
     return typeof monto === 'number' && isFinite(monto);
 }
 
+// Acepta tanto un campo singular (ej. "sp") como su versión en lista (ej. "sps") y devuelve
+// siempre un arreglo de strings recortados y sin vacíos.
+function normalizarLista(lista, valorUnico) {
+    return Array.isArray(lista)
+        ? lista.map((v) => String(v).trim()).filter(Boolean)
+        : (valorUnico ? [String(valorUnico).trim()] : []);
+}
+
+// El mismo documento se puede buscar por distintos identificadores (Referencia Operativa,
+// SP, Número de Documento Fiscal, Número de Documento SAP). Arma un arreglo de condiciones
+// SQL (una por cada identificador que el usuario realmente ingresó) para unirlas con OR;
+// las que vienen vacías simplemente no se agregan, para no generar "IN ()" inválido.
+function condicionesIdentificadoresDocumento(request, { referencias, sps, documentosFiscales, documentosSap }, prefijo) {
+    const condiciones = [];
+
+    if (referencias.length) {
+        const params = referencias.map((valor, i) => {
+            const nombre = `${prefijo}ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        condiciones.push(`d.ReferenciaOperativa IN (${params.join(", ")})`);
+    }
+    if (sps.length) {
+        const params = sps.map((valor, i) => {
+            const nombre = `${prefijo}sp${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        condiciones.push(`sp.[Unique] IN (${params.join(", ")})`);
+    }
+    if (documentosFiscales.length) {
+        const params = documentosFiscales.map((valor, i) => {
+            const nombre = `${prefijo}fis${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        condiciones.push(`d.NumeroDocumentoFiscal IN (${params.join(", ")})`);
+    }
+    if (documentosSap.length) {
+        const params = documentosSap.map((valor, i) => {
+            const nombre = `${prefijo}sap${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        condiciones.push(`rc.NumeroDocumentoSap IN (${params.join(", ")})`);
+    }
+
+    return condiciones;
+}
+
 app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (req, res) => {
     try {
         const { ReferenciaOperativa, ModifiedBy } = req.body;
@@ -400,22 +451,24 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
 
 app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (req, res) => {
     try {
-        const { referencia, referencias, codigoErp } = req.body;
-        const listaReferencias = Array.isArray(referencias)
-            ? referencias.map((r) => String(r).trim()).filter(Boolean)
-            : (referencia ? [String(referencia).trim()] : []);
+        const { referencia, referencias, sp, sps, documentoFiscal, documentosFiscales, documentoSap, documentosSap, codigoErp } = req.body;
+        const listaReferencias = normalizarLista(referencias, referencia);
+        const listaSps = normalizarLista(sps, sp);
+        const listaFiscales = normalizarLista(documentosFiscales, documentoFiscal);
+        const listaSap = normalizarLista(documentosSap, documentoSap);
 
-        if (listaReferencias.length === 0) {
-            return res.status(400).json({ Message: "La referencia operativa es requerida." });
+        if (listaReferencias.length === 0 && listaSps.length === 0 && listaFiscales.length === 0 && listaSap.length === 0) {
+            return res.status(400).json({ Message: "Ingrese al menos un criterio de búsqueda: Referencia Operativa, SP, Número de Documento Fiscal o Número de Documento SAP." });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();
-        const parametros = listaReferencias.map((valor, i) => {
-            const nombre = `ref${i}`;
-            request.input(nombre, sql.VarChar, valor);
-            return `@${nombre}`;
-        });
+        const condiciones = condicionesIdentificadoresDocumento(request, {
+            referencias: listaReferencias,
+            sps: listaSps,
+            documentosFiscales: listaFiscales,
+            documentosSap: listaSap
+        }, "doc");
         // Opcional: filtra a solo los documentos cuyo material tenga este Código ERP
         // (MaterialTenant.CodigoErpReembolso). Si no se manda, se comporta igual que antes.
         request.input('codigoErp', sql.VarChar, codigoErp ? String(codigoErp).trim() : null);
@@ -457,7 +510,7 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
                     ORDER BY MP2.Descripcion ASC
                 ) MP
                 LEFT JOIN MaterialTenant MT ON MP.MaterialTenantId = MT.Id
-                WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+                WHERE (${condiciones.join(" OR ")})
                   AND d.IsSoftDeleted = '0'
                   AND (@codigoErp IS NULL OR EXISTS (
                       SELECT 1 FROM dbo.DocumentoDetalle DD3
@@ -481,30 +534,34 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
 // ingresada(s) (mismo filtro base que documentosParaEliminar, sin el filtro de codigoErp).
 app.post('/codigosErpParaEliminar', requirePermission('cfo', 'elimDoc'), async (req, res) => {
     try {
-        const { referencia, referencias } = req.body;
-        const listaReferencias = Array.isArray(referencias)
-            ? referencias.map((r) => String(r).trim()).filter(Boolean)
-            : (referencia ? [String(referencia).trim()] : []);
+        const { referencia, referencias, sp, sps, documentoFiscal, documentosFiscales, documentoSap, documentosSap } = req.body;
+        const listaReferencias = normalizarLista(referencias, referencia);
+        const listaSps = normalizarLista(sps, sp);
+        const listaFiscales = normalizarLista(documentosFiscales, documentoFiscal);
+        const listaSap = normalizarLista(documentosSap, documentoSap);
 
-        if (listaReferencias.length === 0) {
+        if (listaReferencias.length === 0 && listaSps.length === 0 && listaFiscales.length === 0 && listaSap.length === 0) {
             return res.json([]);
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();
-        const parametros = listaReferencias.map((valor, i) => {
-            const nombre = `ref${i}`;
-            request.input(nombre, sql.VarChar, valor);
-            return `@${nombre}`;
-        });
+        const condiciones = condicionesIdentificadoresDocumento(request, {
+            referencias: listaReferencias,
+            sps: listaSps,
+            documentosFiscales: listaFiscales,
+            documentosSap: listaSap
+        }, "erp");
 
         const resultado = await request.query(`
             SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
             FROM Documento d
+            LEFT JOIN SolicitudDePago AS sp ON (d.Id = sp.Id)
+            LEFT JOIN RegistroContable rc ON (d.RegistroContableId = rc.Id)
             JOIN dbo.DocumentoDetalle DD ON DD.DocumentoId = d.Id
             JOIN dbo.MaterialProveedor MP ON MP.Id = DD.MaterialProveedorId
             JOIN dbo.MaterialTenant MT ON MT.Id = MP.MaterialTenantId
-            WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+            WHERE (${condiciones.join(" OR ")})
               AND d.IsSoftDeleted = '0'
               AND MT.CodigoErpReembolso IS NOT NULL
             ORDER BY MT.CodigoErpReembolso ASC

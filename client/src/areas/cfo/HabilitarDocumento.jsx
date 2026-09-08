@@ -39,6 +39,8 @@ function Badge({ text, style }) {
 
 export default function HabilitarDocumento() {
   const [referencia, setReferencia] = useState("");
+  const [codigoErp, setCodigoErp] = useState("");
+  const [codigoErpOptions, setCodigoErpOptions] = useState([]);
   const autorizadorActual = useAutorizadorActual();
   const autorizador = autorizadorActual?.id || "";
   const [documentos, setDocumentos] = useState([]);
@@ -71,7 +73,7 @@ export default function HabilitarDocumento() {
       const response = await apiFetch(`/documentosPorReferencia`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referencias })
+        body: JSON.stringify({ referencias, codigoErp: codigoErp.trim() || undefined })
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -114,8 +116,33 @@ export default function HabilitarDocumento() {
 
   const handleClear = () => {
     setReferencia("");
+    setCodigoErp("");
+    setCodigoErpOptions([]);
     setDocumentos([]);
     setSearched(false);
+  };
+
+  // Se dispara al salir del campo de Referencia: llena el desplegable de Código ERP
+  // solo con los códigos que realmente están ligados a algún documento de esa(s) referencia(s).
+  const fetchCodigosErp = async () => {
+    const referencias = referencia.split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean);
+    if (referencias.length === 0) {
+      setCodigoErpOptions([]);
+      return;
+    }
+    try {
+      const response = await apiFetch(`/codigosErpPorReferencia`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ referencias })
+      });
+      const data = await response.json().catch(() => []);
+      const opciones = Array.isArray(data) ? data : [];
+      setCodigoErpOptions(opciones);
+      setCodigoErp((actual) => (actual && !opciones.includes(actual) ? "" : actual));
+    } catch (error) {
+      setCodigoErpOptions([]);
+    }
   };
 
   const handleHabilitar = async (doc) => {
@@ -192,26 +219,46 @@ export default function HabilitarDocumento() {
       </div>
 
       <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "24px" }}>
-        <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-          Filtrar por Referencia Operativa
-        </label>
-        <div style={{ display: "flex", gap: "12px" }}>
-          <div style={{ position: "relative", flex: 1 }}>
-            <span style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "#a3acb9", fontSize: "16px" }}>🔍</span>
-            <input
-              type="text"
-              placeholder="Ingrese una o varias Referencias Operativas..."
-              value={referencia}
-              onChange={(e) => setReferencia(e.target.value)}
-              style={{ width: "100%", padding: "10px 12px 10px 38px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
-              disabled={loading}
-            />
+        <div style={{ display: "flex", gap: "12px", alignItems: "flex-end" }}>
+          <div style={{ flex: 2 }}>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Referencia Operativa
+            </label>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "#a3acb9", fontSize: "16px" }}>🔍</span>
+              <input
+                type="text"
+                placeholder="Ingrese una o varias Referencias Operativas..."
+                value={referencia}
+                onChange={(e) => setReferencia(e.target.value)}
+                onBlur={fetchCodigosErp}
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px 10px 38px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+                disabled={loading}
+              />
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: "180px" }}>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Filtrar por Código ERP
+            </label>
+            <select
+              value={codigoErp}
+              onChange={(e) => setCodigoErp(e.target.value)}
+              disabled={loading || !referencia.trim() || codigoErpOptions.length === 0}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+            >
+              <option value="">
+                {!referencia.trim() ? "Ingrese primero la Referencia" : codigoErpOptions.length === 0 ? "Sin códigos ERP" : "Todos los códigos"}
+              </option>
+              {codigoErpOptions.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
           </div>
           <button
             className="btn primary"
             onClick={handleBuscar}
             disabled={loading}
-            style={{ padding: "0 20px" }}
           >
             {loading ? "Buscando..." : "Buscar Registros"}
           </button>
@@ -219,7 +266,6 @@ export default function HabilitarDocumento() {
             className="btn ghost"
             onClick={handleClear}
             disabled={loading}
-            style={{ padding: "0 20px" }}
           >
             Limpiar
           </button>

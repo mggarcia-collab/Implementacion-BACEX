@@ -127,7 +127,7 @@ app.post('/getCliente', requirePermission('cfo', 'salesorder'), async (req, res)
 
 app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (req, res) => {
     try {
-        const { referencia, referencias } = req.body;
+        const { referencia, referencias, codigoErp } = req.body;
         const listaReferencias = Array.isArray(referencias)
             ? referencias.map((r) => String(r).trim()).filter(Boolean)
             : (referencia ? [String(referencia).trim()] : []);
@@ -143,6 +143,9 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
             request.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
+        // Opcional: filtra a solo los documentos cuyo material tenga este Código ERP
+        // (MaterialTenant.CodigoErpReembolso). Si no se manda, se comporta igual que antes.
+        request.input('codigoErp', sql.VarChar, codigoErp ? String(codigoErp).trim() : null);
 
         const resultado = await request
             .query(`
@@ -173,11 +176,19 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
                     SELECT TOP 1 MP2.Descripcion
                     FROM dbo.DocumentoDetalle DD2
                     JOIN dbo.MaterialProveedor MP2 ON MP2.Id = DD2.MaterialProveedorId
+                    LEFT JOIN dbo.MaterialTenant MT2 ON MT2.Id = MP2.MaterialTenantId
                     WHERE DD2.DocumentoId = d.Id
+                      AND (@codigoErp IS NULL OR MT2.CodigoErpReembolso = @codigoErp)
                     ORDER BY MP2.Descripcion ASC
                 ) MP
                 WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
                   AND d.IsSoftDeleted = 0
+                  AND (@codigoErp IS NULL OR EXISTS (
+                      SELECT 1 FROM dbo.DocumentoDetalle DD3
+                      JOIN dbo.MaterialProveedor MP3 ON MP3.Id = DD3.MaterialProveedorId
+                      JOIN dbo.MaterialTenant MT3 ON MT3.Id = MP3.MaterialTenantId
+                      WHERE DD3.DocumentoId = d.Id AND MT3.CodigoErpReembolso = @codigoErp
+                  ))
                 ORDER BY d.ReferenciaOperativa ASC, MP.Descripcion ASC
             `);
 
@@ -186,6 +197,48 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
     } catch (error) {
         console.error("Error en documentosPorReferencia:", error);
         return res.status(500).json({ Message: "Error al obtener documentos", Error: error.message });
+    }
+});
+
+// Lista de Códigos ERP disponibles para llenar el desplegable de filtro: solo los que
+// realmente están ligados a algún documento de la(s) Referencia(s) Operativa(s) ingresada(s)
+// (mismo filtro base que documentosPorReferencia, sin el filtro de codigoErp).
+app.post('/codigosErpPorReferencia', requirePermission('cfo', 'habDoc'), async (req, res) => {
+    try {
+        const { referencia, referencias } = req.body;
+        const listaReferencias = Array.isArray(referencias)
+            ? referencias.map((r) => String(r).trim()).filter(Boolean)
+            : (referencia ? [String(referencia).trim()] : []);
+
+        if (listaReferencias.length === 0) {
+            return res.json([]);
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const request = pool.request();
+        const parametros = listaReferencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+
+        const resultado = await request.query(`
+            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
+            FROM Documento d
+            JOIN dbo.DocumentoDetalle DD ON DD.DocumentoId = d.Id
+            JOIN dbo.MaterialProveedor MP ON MP.Id = DD.MaterialProveedorId
+            JOIN dbo.MaterialTenant MT ON MT.Id = MP.MaterialTenantId
+            WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+              AND d.IsSoftDeleted = 0
+              AND MT.CodigoErpReembolso IS NOT NULL
+            ORDER BY MT.CodigoErpReembolso ASC
+        `);
+
+        return res.json(resultado.recordset.map((r) => r.CodigoErp));
+
+    } catch (error) {
+        console.error("Error en codigosErpPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al obtener códigos ERP", Error: error.message });
     }
 });
 
@@ -347,7 +400,7 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
 
 app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (req, res) => {
     try {
-        const { referencia, referencias } = req.body;
+        const { referencia, referencias, codigoErp } = req.body;
         const listaReferencias = Array.isArray(referencias)
             ? referencias.map((r) => String(r).trim()).filter(Boolean)
             : (referencia ? [String(referencia).trim()] : []);
@@ -363,6 +416,9 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
             request.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
+        // Opcional: filtra a solo los documentos cuyo material tenga este Código ERP
+        // (MaterialTenant.CodigoErpReembolso). Si no se manda, se comporta igual que antes.
+        request.input('codigoErp', sql.VarChar, codigoErp ? String(codigoErp).trim() : null);
 
         const resultado = await request
             .query(`
@@ -395,12 +451,20 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
                     SELECT TOP 1 MP2.Descripcion, MP2.MaterialTenantId
                     FROM dbo.DocumentoDetalle DD2
                     JOIN dbo.MaterialProveedor MP2 ON MP2.Id = DD2.MaterialProveedorId
+                    LEFT JOIN dbo.MaterialTenant MT2 ON MT2.Id = MP2.MaterialTenantId
                     WHERE DD2.DocumentoId = d.Id
+                      AND (@codigoErp IS NULL OR MT2.CodigoErpReembolso = @codigoErp)
                     ORDER BY MP2.Descripcion ASC
                 ) MP
                 LEFT JOIN MaterialTenant MT ON MP.MaterialTenantId = MT.Id
                 WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
                   AND d.IsSoftDeleted = '0'
+                  AND (@codigoErp IS NULL OR EXISTS (
+                      SELECT 1 FROM dbo.DocumentoDetalle DD3
+                      JOIN dbo.MaterialProveedor MP3 ON MP3.Id = DD3.MaterialProveedorId
+                      JOIN dbo.MaterialTenant MT3 ON MT3.Id = MP3.MaterialTenantId
+                      WHERE DD3.DocumentoId = d.Id AND MT3.CodigoErpReembolso = @codigoErp
+                  ))
                 ORDER BY d.ReferenciaOperativa ASC, MP.Descripcion ASC
             `);
 
@@ -409,6 +473,48 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
     } catch (error) {
         console.error("Error en documentosParaEliminar:", error);
         return res.status(500).json({ Message: "Error al obtener documentos", Error: error.message });
+    }
+});
+
+// Lista de Códigos ERP disponibles para llenar el desplegable de filtro: solo los que
+// realmente están ligados a algún documento eliminable de la(s) Referencia(s) Operativa(s)
+// ingresada(s) (mismo filtro base que documentosParaEliminar, sin el filtro de codigoErp).
+app.post('/codigosErpParaEliminar', requirePermission('cfo', 'elimDoc'), async (req, res) => {
+    try {
+        const { referencia, referencias } = req.body;
+        const listaReferencias = Array.isArray(referencias)
+            ? referencias.map((r) => String(r).trim()).filter(Boolean)
+            : (referencia ? [String(referencia).trim()] : []);
+
+        if (listaReferencias.length === 0) {
+            return res.json([]);
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const request = pool.request();
+        const parametros = listaReferencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+
+        const resultado = await request.query(`
+            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
+            FROM Documento d
+            JOIN dbo.DocumentoDetalle DD ON DD.DocumentoId = d.Id
+            JOIN dbo.MaterialProveedor MP ON MP.Id = DD.MaterialProveedorId
+            JOIN dbo.MaterialTenant MT ON MT.Id = MP.MaterialTenantId
+            WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+              AND d.IsSoftDeleted = '0'
+              AND MT.CodigoErpReembolso IS NOT NULL
+            ORDER BY MT.CodigoErpReembolso ASC
+        `);
+
+        return res.json(resultado.recordset.map((r) => r.CodigoErp));
+
+    } catch (error) {
+        console.error("Error en codigosErpParaEliminar:", error);
+        return res.status(500).json({ Message: "Error al obtener códigos ERP", Error: error.message });
     }
 });
 

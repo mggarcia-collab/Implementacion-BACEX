@@ -10,6 +10,7 @@ import analisisRoutes from './routes/Analisis.routes.js'
 import seguimientoRoutes from './routes/Seguimiento.routes.js'
 import authRoutes from './routes/Auth.routes.js'
 import actividadRoutes from './routes/Actividad.routes.js'
+import personasRoutes from './routes/Personas.routes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const clienteDist = path.join(__dirname, '../client/dist')
@@ -55,6 +56,7 @@ const corsOptions = cors({
 })
 
 app.use('/api/auth', corsOptions, authRoutes);
+app.use('/api/auth', corsOptions, personasRoutes);
 app.use('/api', corsOptions, cfoRoutes);
 app.use('/api', corsOptions, hrRoutes);
 app.use('/api', corsOptions, analisisRoutes);

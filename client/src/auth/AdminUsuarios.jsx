@@ -382,7 +382,7 @@ export default function AdminUsuarios() {
   };
 
   return (
-    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "1000px" }}>
+    <div className="form-wrap" style={{ position: "relative", zIndex: 1, width: "100%" }}>
       <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "25px" }}>
         <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>Administración de Usuarios</div>
         <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>Crea usuarios y define a qué módulos tiene acceso cada uno</div>

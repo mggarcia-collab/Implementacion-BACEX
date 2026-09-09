@@ -219,7 +219,7 @@ export default function SalesOrder({ onNavigate }) {
         </div>
 
         <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: "16px", border: "1px solid #e3e8ee", borderRadius: "10px", padding: "16px", background: "#fbfcfd" }}>
-          {(aduanaSearched || aduanaLoading) ? (
+          {(aduanaSearched || aduanaLoading) && (
             <div className="cuadro-box">
               <div className="cuadro-box-header">
                 <div className="cuadro-box-icon">{aduanaMeta.icon}</div>
@@ -229,10 +229,6 @@ export default function SalesOrder({ onNavigate }) {
                 </div>
               </div>
               <Aduana resultados={aduanaResultados} loading={aduanaLoading} searched={aduanaSearched} />
-            </div>
-          ) : (
-            <div style={{ color: "#94a3b8", fontSize: "13px", padding: "12px" }}>
-              Use "Aduana y Sello" para ver el estado en CFO y el sello de liberación de las referencias ingresadas.
             </div>
           )}
 

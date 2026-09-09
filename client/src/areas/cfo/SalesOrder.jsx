@@ -151,6 +151,10 @@ export default function SalesOrder() {
     }
     setLoading(false);
     showToast("✓ Procesamiento finalizado", "ok");
+
+    // Refresca Aduana y Sello con el estado recién actualizado, para no tener
+    // que darle clic aparte a "Aduana y Sello" después de habilitar.
+    await Promise.all([fetchAduana(listaOrders), fetchSello(listaOrders)]);
   };
 
   return (

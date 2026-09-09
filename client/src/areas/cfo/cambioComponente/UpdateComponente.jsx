@@ -17,6 +17,21 @@ export default function UpdateComponente({ filaActual, opciones = [], onActualiz
     return <p style={{ color: "#697386", fontSize: "14px" }}>Busque una Referencia Operativa para poder corregir su componente.</p>;
   }
 
+  // El servicio externo (cfows) guarda cada cambio ACUMULADO en el mismo campo
+  // Observacion del SalesOrder (nunca lo reemplaza), y esa columna solo acepta
+  // 800 caracteres — al llenarse, el próximo cambio falla con un error de la
+  // base de datos del servicio externo, sin importar qué tan corto sea el
+  // motivo que se escriba aquí. Se avisa antes de que eso pase.
+  const LIMITE_OBSERVACION = 800;
+  const longitudUsada = filaActual.ObservacionLongitud || 0;
+  const espacioDisponible = LIMITE_OBSERVACION - longitudUsada;
+  const nivelAlerta = espacioDisponible <= 80 ? "danger" : espacioDisponible <= 200 ? "warning" : "ok";
+  const estilosAlerta = {
+    ok: { background: "#f0fdf4", border: "#86efac", color: "#166534" },
+    warning: { background: "#fffbeb", border: "#fde68a", color: "#92400e" },
+    danger: { background: "#fef2f2", border: "#fca5a5", color: "#991b1b" },
+  }[nivelAlerta];
+
   const puedeEnviar = componenteNuevo && autorizador && motivo.trim() && !actualizando;
 
   const handleSubmit = () => {
@@ -41,6 +56,21 @@ export default function UpdateComponente({ filaActual, opciones = [], onActualiz
           </div>
           <div style={{ fontSize: "13.5px", fontWeight: "600", color: "#78350f" }}>{filaActual.Descripcion}</div>
           <div style={{ fontSize: "11px", color: "#a16207", marginTop: "2px" }}>({filaActual.Componente_ID})</div>
+        </div>
+        <div style={{ background: estilosAlerta.background, border: `1px solid ${estilosAlerta.border}`, borderRadius: "8px", padding: "10px 12px" }}>
+          <div style={{ fontSize: "11px", fontWeight: "700", color: estilosAlerta.color, textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: "4px" }}>
+            Historial de observaciones
+          </div>
+          <div style={{ fontSize: "13.5px", fontWeight: "600", color: estilosAlerta.color }}>
+            {longitudUsada}/{LIMITE_OBSERVACION} caracteres usados
+          </div>
+          <div style={{ fontSize: "11px", color: estilosAlerta.color, marginTop: "2px" }}>
+            {nivelAlerta === "danger"
+              ? "⚠️ Casi sin espacio — el próximo cambio puede fallar (límite del servicio externo)."
+              : nivelAlerta === "warning"
+                ? "Quedan pocos caracteres disponibles antes del límite."
+                : `${espacioDisponible} caracteres disponibles.`}
+          </div>
         </div>
       </div>
 

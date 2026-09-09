@@ -1000,7 +1000,8 @@ app.post('/componentePorReferencias', requirePermission('cfo', 'cambio'), async 
                 C.Descripcion,
                 SO.CentroSuministrador,
                 SO.OficinaVenta,
-                SO.IsSoftDeleted
+                SO.IsSoftDeleted,
+                LEN(SO.Observacion) AS ObservacionLongitud
             FROM [dbo].[SalesOrderDetalle] SD
             LEFT JOIN [dbo].[SalesOrder] SO ON SO.id = SD.salesOrderId
             LEFT JOIN [dbo].[Componente] C ON C.ID = SD.ComponenteID

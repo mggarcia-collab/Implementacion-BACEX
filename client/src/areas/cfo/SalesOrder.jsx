@@ -35,7 +35,7 @@ function classify(ok, message) {
   return "error";
 }
 
-export default function SalesOrder() {
+export default function SalesOrder({ onNavigate }) {
   const autorizadorActual = useAutorizadorActual();
   const [formValues, setFormValues] = useState({});
   const [loading, setLoading] = useState(false);
@@ -161,6 +161,25 @@ export default function SalesOrder() {
     <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "100%" }}>
       <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
       <div className="form-sub" style={{ color: "#697386", marginBottom: "20px" }}>{meta.desc}</div>
+
+      <div style={{
+        display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+        background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
+        padding: "12px 14px", marginBottom: "16px"
+      }}>
+        <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "220px" }}>
+          ⚠️ Si esta Referencia Operativa está asignada a una Aduana incorrecta, debe hacer
+          <strong> Cambio de Componente</strong> antes de habilitar el SalesOrder.
+        </span>
+        <button
+          type="button"
+          className="btn danger"
+          onClick={() => onNavigate?.("cfo", "cambio")}
+          style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+        >
+          Ir a Cambio de Componente
+        </button>
+      </div>
 
       <div style={{ display: "flex", gap: "20px", flexWrap: "nowrap", alignItems: "flex-start" }}>
         <div style={{ flex: "0 0 240px" }}>

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../apiClient.js";
 import { useToast } from "../components/Toast.jsx";
+import { areas } from "../areas/index.js";
+import { meta as adminUsuariosMeta } from "./AdminUsuarios.jsx";
 
 export const meta = {
   label: "Bitácora",
@@ -27,7 +29,25 @@ export default function AdminBitacora() {
   const [cargando, setCargando] = useState(true);
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
+  const [usuarioFiltro, setUsuarioFiltro] = useState("");
+  const [moduloFiltro, setModuloFiltro] = useState("");
   const showToast = useToast();
+
+  // Lista de usuarios: solo los que realmente tienen actividad registrada.
+  const usuariosDisponibles = useMemo(() => {
+    const nombres = new Set(actividades.map((a) => a.usuarioNombre).filter(Boolean));
+    return [...nombres].sort((a, b) => a.localeCompare(b));
+  }, [actividades]);
+
+  // Lista de módulos: el catálogo completo de módulos existentes en la app
+  // (no solo los que ya tienen actividad), para poder filtrar por cualquiera.
+  const modulosDisponibles = useMemo(() => {
+    const etiquetas = new Set([adminUsuariosMeta.label]);
+    Object.values(areas).forEach((area) => {
+      Object.values(area.modules).forEach((modulo) => etiquetas.add(modulo.label));
+    });
+    return [...etiquetas].sort((a, b) => a.localeCompare(b));
+  }, []);
 
   useEffect(() => {
     let cancelado = false;
@@ -45,22 +65,30 @@ export default function AdminBitacora() {
     return () => { cancelado = true; };
   }, []);
 
-  // El filtro de fecha aplica tanto a lo que se ve en pantalla como a lo que
-  // se descarga, para que el Excel siempre coincida con lo que se está viendo.
+  // Todos los filtros son opcionales (ninguno obligatorio) y se combinan entre
+  // sí; el PDF descargable siempre coincide con lo que queda filtrado en pantalla.
   const actividadesFiltradas = useMemo(() => {
-    if (!desde && !hasta) return actividades;
     const desdeMs = desde ? new Date(`${desde}T00:00:00`).getTime() : -Infinity;
     const hastaMs = hasta ? new Date(`${hasta}T23:59:59.999`).getTime() : Infinity;
     return actividades.filter((a) => {
-      const ms = parsearFecha(a.fecha).getTime();
-      return ms >= desdeMs && ms <= hastaMs;
+      if (usuarioFiltro && a.usuarioNombre !== usuarioFiltro) return false;
+      if (moduloFiltro && a.moduloLabel !== moduloFiltro) return false;
+      if (desde || hasta) {
+        const ms = parsearFecha(a.fecha).getTime();
+        if (ms < desdeMs || ms > hastaMs) return false;
+      }
+      return true;
     });
-  }, [actividades, desde, hasta]);
+  }, [actividades, desde, hasta, usuarioFiltro, moduloFiltro]);
 
   const limpiarFiltro = () => {
     setDesde("");
     setHasta("");
+    setUsuarioFiltro("");
+    setModuloFiltro("");
   };
+
+  const hayFiltrosActivos = desde || hasta || usuarioFiltro || moduloFiltro;
 
   // Se genera un PDF (no Excel) a propósito: es el formato estándar para un
   // reporte final que se entrega a otra persona — no se edita con las
@@ -89,11 +117,12 @@ export default function AdminBitacora() {
 
     autoTable(doc, {
       startY: 27,
-      head: [["Nombre", "Referencia", "Actividad", "Módulo", "Fecha y hora"]],
+      head: [["Nombre", "Referencia", "Actividad", "Motivo", "Módulo", "Fecha y hora"]],
       body: actividadesFiltradas.map((a) => [
         a.usuarioNombre,
         a.referencia || "—",
         a.accion,
+        a.motivo || "—",
         a.moduloLabel || "—",
         formatoFecha.format(parsearFecha(a.fecha)),
       ]),
@@ -122,6 +151,24 @@ export default function AdminBitacora() {
 
       <div style={{ display: "flex", alignItems: "flex-end", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
         <div className="field" style={{ margin: 0 }}>
+          <label>Usuario</label>
+          <select value={usuarioFiltro} onChange={(e) => setUsuarioFiltro(e.target.value)}>
+            <option value="">Todos</option>
+            {usuariosDisponibles.map((nombre) => (
+              <option key={nombre} value={nombre}>{nombre}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label>Módulo</label>
+          <select value={moduloFiltro} onChange={(e) => setModuloFiltro(e.target.value)}>
+            <option value="">Todos</option>
+            {modulosDisponibles.map((label) => (
+              <option key={label} value={label}>{label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field" style={{ margin: 0 }}>
           <label>Desde</label>
           <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
         </div>
@@ -129,9 +176,9 @@ export default function AdminBitacora() {
           <label>Hasta</label>
           <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
         </div>
-        {(desde || hasta) && (
+        {hayFiltrosActivos && (
           <button className="btn" onClick={limpiarFiltro} style={{ marginBottom: "1px" }}>
-            Limpiar filtro
+            Limpiar filtros
           </button>
         )}
       </div>
@@ -143,16 +190,17 @@ export default function AdminBitacora() {
               <th>Nombre</th>
               <th>Referencia</th>
               <th>Actividad</th>
+              <th>Motivo</th>
               <th>Módulo</th>
               <th>Fecha y hora</th>
             </tr>
           </thead>
           <tbody>
             {cargando ? (
-              <tr><td colSpan={5} className="actividad-vacio">Cargando…</td></tr>
+              <tr><td colSpan={6} className="actividad-vacio">Cargando…</td></tr>
             ) : actividadesFiltradas.length === 0 ? (
-              <tr><td colSpan={5} className="actividad-vacio">
-                {actividades.length === 0 ? "Todavía no hay actividad registrada." : "No hay actividad en el rango de fechas seleccionado."}
+              <tr><td colSpan={6} className="actividad-vacio">
+                {actividades.length === 0 ? "Todavía no hay actividad registrada." : "No hay actividad con los filtros seleccionados."}
               </td></tr>
             ) : (
               actividadesFiltradas.map((a) => (
@@ -160,6 +208,7 @@ export default function AdminBitacora() {
                   <td>{a.usuarioNombre}</td>
                   <td>{a.referencia || "—"}</td>
                   <td>{a.accion}</td>
+                  <td>{a.motivo || "—"}</td>
                   <td>{a.moduloLabel || "—"}</td>
                   <td>{formatoFecha.format(parsearFecha(a.fecha))}</td>
                 </tr>

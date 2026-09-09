@@ -74,7 +74,7 @@ export default function UpdateComponente({ filaActual, opciones = [], onActualiz
         </div>
       </div>
 
-      <div style={{ flex: "1 1 460px", display: "flex", flexDirection: "column", gap: "14px" }}>
+      <div style={{ flex: "1 1 460px", display: "flex", flexDirection: "column", gap: "14px", justifyContent: "center" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "14px" }}>
           <div>
             <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "6px" }}>

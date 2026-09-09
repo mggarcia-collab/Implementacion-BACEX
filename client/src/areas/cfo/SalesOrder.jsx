@@ -218,33 +218,35 @@ export default function SalesOrder({ onNavigate }) {
           </div>
         </div>
 
-        <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: "16px", border: "1px solid #e3e8ee", borderRadius: "10px", padding: "16px", background: "#fbfcfd" }}>
-          {(aduanaSearched || aduanaLoading) && (
-            <div className="cuadro-box">
-              <div className="cuadro-box-header">
-                <div className="cuadro-box-icon">{aduanaMeta.icon}</div>
-                <div>
-                  <div className="cuadro-box-title">{aduanaMeta.label}</div>
-                  <div className="cuadro-box-desc">{aduanaMeta.desc}</div>
+        {(aduanaSearched || aduanaLoading || selloSearched || selloLoading) && (
+          <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: "16px", border: "1px solid #e3e8ee", borderRadius: "10px", padding: "16px", background: "#fbfcfd" }}>
+            {(aduanaSearched || aduanaLoading) && (
+              <div className="cuadro-box">
+                <div className="cuadro-box-header">
+                  <div className="cuadro-box-icon">{aduanaMeta.icon}</div>
+                  <div>
+                    <div className="cuadro-box-title">{aduanaMeta.label}</div>
+                    <div className="cuadro-box-desc">{aduanaMeta.desc}</div>
+                  </div>
                 </div>
+                <Aduana resultados={aduanaResultados} loading={aduanaLoading} searched={aduanaSearched} />
               </div>
-              <Aduana resultados={aduanaResultados} loading={aduanaLoading} searched={aduanaSearched} />
-            </div>
-          )}
+            )}
 
-          {(selloSearched || selloLoading) && (
-            <div className="cuadro-box">
-              <div className="cuadro-box-header">
-                <div className="cuadro-box-icon">{selloMeta.icon}</div>
-                <div>
-                  <div className="cuadro-box-title">{selloMeta.label}</div>
-                  <div className="cuadro-box-desc">{selloMeta.desc}</div>
+            {(selloSearched || selloLoading) && (
+              <div className="cuadro-box">
+                <div className="cuadro-box-header">
+                  <div className="cuadro-box-icon">{selloMeta.icon}</div>
+                  <div>
+                    <div className="cuadro-box-title">{selloMeta.label}</div>
+                    <div className="cuadro-box-desc">{selloMeta.desc}</div>
+                  </div>
                 </div>
+                <ValidacionSello resultados={selloResultados} loading={selloLoading} searched={selloSearched} />
               </div>
-              <ValidacionSello resultados={selloResultados} loading={selloLoading} searched={selloSearched} />
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {soResults.length > 0 && (

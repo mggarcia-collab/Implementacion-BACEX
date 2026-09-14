@@ -18,7 +18,7 @@ const formatoFecha = new Intl.DateTimeFormat("es-HN", {
   minute: "2-digit",
 });
 
-const TAMANO_PAGINA = 25;
+const TAMANO_PAGINA = 7;
 
 function parsearFecha(sqliteDateUtc) {
   // SQLite guarda datetime('now') en UTC sin indicarlo con "Z"; hay que agregarlo

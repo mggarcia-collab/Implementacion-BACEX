@@ -18,6 +18,8 @@ const formatoFecha = new Intl.DateTimeFormat("es-HN", {
   minute: "2-digit",
 });
 
+const TAMANO_PAGINA = 25;
+
 function parsearFecha(sqliteDateUtc) {
   // SQLite guarda datetime('now') en UTC sin indicarlo con "Z"; hay que agregarlo
   // para que el navegador no lo interprete como hora local y muestre la fecha mal.
@@ -31,6 +33,7 @@ export default function AdminBitacora() {
   const [hasta, setHasta] = useState("");
   const [usuarioFiltro, setUsuarioFiltro] = useState("");
   const [moduloFiltro, setModuloFiltro] = useState("");
+  const [pagina, setPagina] = useState(1);
   const showToast = useToast();
 
   // Lista de usuarios: solo los que realmente tienen actividad registrada.
@@ -89,6 +92,19 @@ export default function AdminBitacora() {
   };
 
   const hayFiltrosActivos = desde || hasta || usuarioFiltro || moduloFiltro;
+
+  // Al cambiar cualquier filtro, se vuelve a la primera página en vez de quedarse
+  // en una página que podría ya no existir con los nuevos resultados filtrados.
+  useEffect(() => {
+    setPagina(1);
+  }, [desde, hasta, usuarioFiltro, moduloFiltro]);
+
+  const totalPaginas = Math.max(1, Math.ceil(actividadesFiltradas.length / TAMANO_PAGINA));
+  const paginaActual = Math.min(pagina, totalPaginas);
+  const actividadesPagina = actividadesFiltradas.slice(
+    (paginaActual - 1) * TAMANO_PAGINA,
+    paginaActual * TAMANO_PAGINA
+  );
 
   // Se genera un PDF (no Excel) a propósito: es el formato estándar para un
   // reporte final que se entrega a otra persona — no se edita con las
@@ -203,7 +219,7 @@ export default function AdminBitacora() {
                 {actividades.length === 0 ? "Todavía no hay actividad registrada." : "No hay actividad con los filtros seleccionados."}
               </td></tr>
             ) : (
-              actividadesFiltradas.map((a) => (
+              actividadesPagina.map((a) => (
                 <tr key={a.id}>
                   <td>{a.usuarioNombre}</td>
                   <td>{a.referencia || "—"}</td>
@@ -217,6 +233,20 @@ export default function AdminBitacora() {
           </tbody>
         </table>
       </div>
+
+      {actividadesFiltradas.length > TAMANO_PAGINA && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", marginTop: "14px" }}>
+          <button className="btn ghost" onClick={() => setPagina((p) => p - 1)} disabled={paginaActual === 1} style={{ padding: "6px 16px", fontSize: "13px" }}>
+            ← Anterior
+          </button>
+          <span style={{ color: "#697386", fontSize: "13px" }}>
+            Página {paginaActual} de {totalPaginas}
+          </span>
+          <button className="btn ghost" onClick={() => setPagina((p) => p + 1)} disabled={paginaActual === totalPaginas} style={{ padding: "6px 16px", fontSize: "13px" }}>
+            Siguiente →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

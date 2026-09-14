@@ -235,14 +235,14 @@ export default function AdminBitacora() {
       </div>
 
       {actividadesFiltradas.length > TAMANO_PAGINA && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", marginTop: "14px" }}>
-          <button className="btn ghost" onClick={() => setPagina((p) => p - 1)} disabled={paginaActual === 1} style={{ padding: "6px 16px", fontSize: "13px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", marginTop: "14px" }}>
+          <button className="btn ghost" onClick={() => setPagina((p) => p - 1)} disabled={paginaActual === 1} style={{ padding: "4px 10px", fontSize: "12px", borderRadius: "4px" }}>
             ← Anterior
           </button>
-          <span style={{ color: "#697386", fontSize: "13px" }}>
+          <span style={{ color: "#697386", fontSize: "12px" }}>
             Página {paginaActual} de {totalPaginas}
           </span>
-          <button className="btn ghost" onClick={() => setPagina((p) => p + 1)} disabled={paginaActual === totalPaginas} style={{ padding: "6px 16px", fontSize: "13px" }}>
+          <button className="btn ghost" onClick={() => setPagina((p) => p + 1)} disabled={paginaActual === totalPaginas} style={{ padding: "4px 10px", fontSize: "12px", borderRadius: "4px" }}>
             Siguiente →
           </button>
         </div>

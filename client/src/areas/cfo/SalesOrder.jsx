@@ -35,7 +35,7 @@ function classify(ok, message) {
   return "error";
 }
 
-export default function SalesOrder() {
+export default function SalesOrder({ onNavigate }) {
   const autorizadorActual = useAutorizadorActual();
   const [formValues, setFormValues] = useState({});
   const [loading, setLoading] = useState(false);
@@ -151,12 +151,35 @@ export default function SalesOrder() {
     }
     setLoading(false);
     showToast("✓ Procesamiento finalizado", "ok");
+
+    // Refresca Aduana y Sello con el estado recién actualizado, para no tener
+    // que darle clic aparte a "Aduana y Sello" después de habilitar.
+    await Promise.all([fetchAduana(listaOrders), fetchSello(listaOrders)]);
   };
 
   return (
     <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "100%" }}>
       <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
       <div className="form-sub" style={{ color: "#697386", marginBottom: "20px" }}>{meta.desc}</div>
+
+      <div style={{
+        display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+        background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
+        padding: "12px 14px", marginBottom: "16px"
+      }}>
+        <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "220px" }}>
+          ⚠️ Si esta Referencia Operativa está asignada a una Aduana incorrecta, debe hacer
+          <strong> Cambio de Componente</strong> antes de habilitar el SalesOrder.
+        </span>
+        <button
+          type="button"
+          className="btn danger"
+          onClick={() => onNavigate?.("cfo", "cambio")}
+          style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+        >
+          Ir a Cambio de Componente
+        </button>
+      </div>
 
       <div style={{ display: "flex", gap: "20px", flexWrap: "nowrap", alignItems: "flex-start" }}>
         <div style={{ flex: "0 0 240px" }}>
@@ -195,37 +218,35 @@ export default function SalesOrder() {
           </div>
         </div>
 
-        <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: "16px", border: "1px solid #e3e8ee", borderRadius: "10px", padding: "16px", background: "#fbfcfd" }}>
-          {(aduanaSearched || aduanaLoading) ? (
-            <div className="cuadro-box">
-              <div className="cuadro-box-header">
-                <div className="cuadro-box-icon">{aduanaMeta.icon}</div>
-                <div>
-                  <div className="cuadro-box-title">{aduanaMeta.label}</div>
-                  <div className="cuadro-box-desc">{aduanaMeta.desc}</div>
+        {(aduanaSearched || aduanaLoading || selloSearched || selloLoading) && (
+          <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: "16px", border: "1px solid #e3e8ee", borderRadius: "10px", padding: "16px", background: "#fbfcfd" }}>
+            {(aduanaSearched || aduanaLoading) && (
+              <div className="cuadro-box">
+                <div className="cuadro-box-header">
+                  <div className="cuadro-box-icon">{aduanaMeta.icon}</div>
+                  <div>
+                    <div className="cuadro-box-title">{aduanaMeta.label}</div>
+                    <div className="cuadro-box-desc">{aduanaMeta.desc}</div>
+                  </div>
                 </div>
+                <Aduana resultados={aduanaResultados} loading={aduanaLoading} searched={aduanaSearched} />
               </div>
-              <Aduana resultados={aduanaResultados} loading={aduanaLoading} searched={aduanaSearched} />
-            </div>
-          ) : (
-            <div style={{ color: "#94a3b8", fontSize: "13px", padding: "12px" }}>
-              Use "Aduana y Sello" para ver el estado en CFO y el sello de liberación de las referencias ingresadas.
-            </div>
-          )}
+            )}
 
-          {(selloSearched || selloLoading) && (
-            <div className="cuadro-box">
-              <div className="cuadro-box-header">
-                <div className="cuadro-box-icon">{selloMeta.icon}</div>
-                <div>
-                  <div className="cuadro-box-title">{selloMeta.label}</div>
-                  <div className="cuadro-box-desc">{selloMeta.desc}</div>
+            {(selloSearched || selloLoading) && (
+              <div className="cuadro-box">
+                <div className="cuadro-box-header">
+                  <div className="cuadro-box-icon">{selloMeta.icon}</div>
+                  <div>
+                    <div className="cuadro-box-title">{selloMeta.label}</div>
+                    <div className="cuadro-box-desc">{selloMeta.desc}</div>
+                  </div>
                 </div>
+                <ValidacionSello resultados={selloResultados} loading={selloLoading} searched={selloSearched} />
               </div>
-              <ValidacionSello resultados={selloResultados} loading={selloLoading} searched={selloSearched} />
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {soResults.length > 0 && (

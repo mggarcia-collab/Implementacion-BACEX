@@ -705,8 +705,11 @@ body {
   border-bottom: none;
 }
 
+.actividad-tabla th:nth-child(3),
 .actividad-tabla tbody td:nth-child(3) {
   white-space: normal;
+  width: 32%;
+  min-width: 240px;
 }
 
 .actividad-vacio {

@@ -26,6 +26,7 @@ app.get("/actividad", requireAuth, (req, res) => {
         moduloLabel: f.modulo_label,
         accion: f.accion,
         referencia: f.referencia,
+        motivo: f.motivo,
         fecha: f.created_date
     })));
 });

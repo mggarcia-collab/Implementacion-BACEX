@@ -289,6 +289,13 @@ export default function AnulacionFacturas() {
       setUltimoResultado({ facturas, observacion: observacion.trim(), correo: autorizadorActual.correo });
       setFacturasSeleccionadas([]);
       setObservacion("");
+
+      // Refresca la búsqueda de arriba con las mismas referencias/números para que
+      // el Estado (Habilitada/Anulada) se vea actualizado sin buscar de nuevo a mano.
+      await Promise.all([
+        referenciasTexto.trim() ? handleBuscarPorReferencia() : null,
+        facturaBusqueda.trim() ? handleBuscarPorNumero() : null,
+      ]);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {

@@ -89,6 +89,13 @@ try {
 } catch {
   // La columna ya existe, no hay nada que hacer.
 }
+// motivo guarda la Observación que la persona escribió al hacer la acción
+// (por qué eliminó/cambió algo), cuando el módulo la pide.
+try {
+  authDb.exec(`ALTER TABLE actividad ADD COLUMN motivo TEXT`);
+} catch {
+  // La columna ya existe, no hay nada que hacer.
+}
 
 export function getPermisosDeUsuario(usuarioId) {
   return authDb
@@ -99,11 +106,11 @@ export function getPermisosDeUsuario(usuarioId) {
 // Registro de actividad para el widget "Actividad reciente" de Inicio y la bitácora
 // completa de Administración. Se llama desde las rutas después de que una acción se
 // aplicó con éxito de verdad (no antes de validar).
-export function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia }) {
+export function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia, motivo }) {
   try {
     authDb
-      .prepare(`INSERT INTO actividad (usuario_id, usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion, referencia) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(usuarioId || null, usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion, referencia || null);
+      .prepare(`INSERT INTO actividad (usuario_id, usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion, referencia, motivo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(usuarioId || null, usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion, referencia || null, motivo || null);
   } catch (error) {
     console.error("Error al registrar actividad:", error);
   }

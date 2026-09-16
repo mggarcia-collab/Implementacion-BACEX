@@ -653,7 +653,8 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
             moduloKey: "elimDoc",
             moduloLabel: "Eliminar Documento",
             accion: "Eliminó documento",
-            referencia: referenciaOperativa || DocumentoId
+            referencia: referenciaOperativa || DocumentoId,
+            motivo: Observacion
         });
 
         return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
@@ -768,7 +769,8 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
             moduloKey: "contrarecibo",
             moduloLabel: "Eliminar ContraRecibo",
             accion: "Eliminó contrarecibo",
-            referencia: codigoInterno || Id
+            referencia: codigoInterno || Id,
+            motivo: Observacion
         });
 
         return res.status(200).json({ Message: "Contrarecibo eliminado con éxito", Data: data });
@@ -998,7 +1000,8 @@ app.post('/componentePorReferencias', requirePermission('cfo', 'cambio'), async 
                 C.Descripcion,
                 SO.CentroSuministrador,
                 SO.OficinaVenta,
-                SO.IsSoftDeleted
+                SO.IsSoftDeleted,
+                LEN(SO.Observacion) AS ObservacionLongitud
             FROM [dbo].[SalesOrderDetalle] SD
             LEFT JOIN [dbo].[SalesOrder] SO ON SO.id = SD.salesOrderId
             LEFT JOIN [dbo].[Componente] C ON C.ID = SD.ComponenteID
@@ -1079,7 +1082,8 @@ app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req
             moduloKey: "cambio",
             moduloLabel: "Cambio de Componente",
             accion: "Actualizó componente",
-            referencia: referenciaOperativa || SalesOrderDetalleId
+            referencia: referenciaOperativa || SalesOrderDetalleId,
+            motivo: Observacion
         });
 
         return res.status(200).json({ Message: "Componente actualizado con éxito", Data: data });
@@ -1373,7 +1377,8 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
             moduloKey: "anulacionFacturas",
             moduloLabel: "Anulación de Facturas",
             accion: `Anuló ${facturas.length} factura(s)`,
-            referencia: facturas.join(", ")
+            referencia: facturas.join(", "),
+            motivo: Observacion
         });
 
         return res.status(200).json({ Message: "Factura(s) anulada(s) con éxito", Data: data });

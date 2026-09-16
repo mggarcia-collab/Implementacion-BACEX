@@ -1579,4 +1579,1557 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
     }
 });
 
+// Discriminator real en Persona según el tipo que se está creando/buscando.
+const DISCRIMINATOR_POR_TIPO = {
+    proveedor: "PersonaJuridicaProveedor",
+    cliente: "PersonaJuridicaCliente",
+};
+
+// Catálogo fijo de Países para Crear Proveedor/Cliente. TipoIdFiscalId no corresponde 1:1 con
+// el país (así lo confirmó el negocio): Honduras usa un Id, y El Salvador/Guatemala/Nicaragua/
+// Costa Rica comparten otro — son valores fijos del sistema externo, no un error de transcripción.
+const PAISES_PROVEEDOR_CLIENTE = {
+    honduras: { id: "65507ECF-249E-454B-A95A-0061BA0FA2BA", descripcion: "HONDURAS", tipoIdFiscalId: "30D1014C-D443-42EE-8015-005FB0D9FA00", sociedad: "9095" },
+    elSalvador: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", descripcion: "EL SALVADOR", tipoIdFiscalId: "174E784C-CEDA-4758-A7F5-0063C3454B73", sociedad: "SV01" },
+    guatemala: { id: "30D1014C-D443-42EE-8015-005FB0D9FA00", descripcion: "GUATEMALA", tipoIdFiscalId: "174E784C-CEDA-4758-A7F5-0063C3454B73", sociedad: "GT01" },
+    nicaragua: { id: "C7194841-BB94-4903-ADD7-0065CC7AF42C", descripcion: "NICARAGUA", tipoIdFiscalId: "174E784C-CEDA-4758-A7F5-0063C3454B73", sociedad: "NI01" },
+    costaRica: { id: "27E0710C-A5BC-4C77-AFC7-137AF86DE6AA", descripcion: "COSTA RICA", tipoIdFiscalId: "174E784C-CEDA-4758-A7F5-0063C3454B73", sociedad: "CR01" },
+};
+
+// Campos fijos que exige CodigoErpProveedorServiceApi/Create y no varían nunca entre códigos.
+const CODIGO_ERP_DEFAULTS = {
+    SistemaId: "30D1014C-D443-42EE-8015-005FB0D9FA00",
+    SistemaDescripcion: "SAP",
+    TipoPersonaDestino: "4",
+};
+
+// Resto de campos fijos que exige PersonaProveedorServiceApi/Create pero que no varían nunca
+// entre proveedores (no se le piden al usuario).
+const PROVEEDOR_DEFAULTS = {
+    TipoIdFiscalDescripcion: "NIT",
+    GrupoPersonaId: "51B0C7C0-3928-4BD6-BCF4-0F7AD764AD0F",
+    GrupoPersonaNombre: "Grupo Varios",
+    Url: "",
+    LimiteDeCredito: 0,
+    TiempoDeCredito: 0,
+    SegmentoId: "F47793A7-BCEC-4DFC-91AA-0F7AD952C6C1",
+    SegmentoNombre: "Varios",
+};
+
+// Referencia corta autogenerada a partir del Nombre: la primera letra de cada una de las
+// primeras 3 palabras (ej. "ALMACEN FISCAL SANDAL S.A" → "AFS"); si el nombre es una sola
+// palabra, se toman sus primeras 3 letras.
+function generarReferencia(nombre) {
+    const palabras = String(nombre || "").trim().split(/\s+/).filter(Boolean);
+    if (palabras.length === 0) return "";
+    if (palabras.length === 1) return palabras[0].slice(0, 3).toUpperCase();
+    return palabras.slice(0, 3).map((p) => p[0]).join("").toUpperCase();
+}
+
+app.post('/personaExistente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { tipo, nombre, idFiscal } = req.body;
+        const discriminator = DISCRIMINATOR_POR_TIPO[tipo];
+        if (!discriminator) {
+            return res.status(400).json({ Message: "Tipo inválido: debe ser 'proveedor' o 'cliente'." });
+        }
+        const nombreTrim = (nombre || "").trim();
+        const idFiscalTrim = (idFiscal || "").trim();
+        if (!nombreTrim && !idFiscalTrim) {
+            return res.status(400).json({ Message: "Ingrese un Nombre o un ID Fiscal para validar." });
+        }
+
+        const pool = await conexion(BasesDeDatos.Personas);
+        const request = pool.request();
+        request.input('discriminator', sql.VarChar, discriminator);
+        const condiciones = [];
+        if (nombreTrim) {
+            request.input('nombre', sql.VarChar, `%${nombreTrim}%`);
+            condiciones.push('Nombre LIKE @nombre');
+        }
+        if (idFiscalTrim) {
+            request.input('idFiscal', sql.VarChar, idFiscalTrim);
+            condiciones.push('IdFiscal = @idFiscal');
+        }
+
+        const resultado = await request.query(`
+            SELECT TOP 10 Id, Nombre, IdFiscal, Discriminator
+            FROM [dbo].[Persona]
+            WHERE Discriminator = @discriminator
+              AND IsSoftDeleted = 0
+              AND (${condiciones.join(" OR ")})
+            ORDER BY Nombre
+        `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en personaExistente:", error);
+        return res.status(500).json({ Message: "Error al validar en Personas", Error: error.message });
+    }
+});
+
+app.post('/crearProveedor', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Nombre, IdFiscal, PaisKey, PresentoComprobantePagos } = req.body;
+
+        const nombreTrim = (Nombre || "").trim();
+        const idFiscalTrim = (IdFiscal || "").trim();
+        const pais = PAISES_PROVEEDOR_CLIENTE[PaisKey];
+
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "El Nombre es requerido." });
+        }
+        if (!idFiscalTrim) {
+            return res.status(400).json({ Message: "El ID Fiscal es requerido." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Debe seleccionar un País válido." });
+        }
+        if (typeof PresentoComprobantePagos !== "boolean") {
+            return res.status(400).json({ Message: "Debe indicar si presentó comprobante de pagos." });
+        }
+
+        // Revalida en Personas justo antes de crear (no confiar únicamente en la validación
+        // que ya hizo el usuario en pantalla, por si cambió el Nombre/ID Fiscal después).
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const validacion = await poolPersonas.request()
+            .input('discriminator', sql.VarChar, DISCRIMINATOR_POR_TIPO.proveedor)
+            .input('idFiscal', sql.VarChar, idFiscalTrim)
+            .query(`
+                SELECT TOP 1 Id FROM [dbo].[Persona]
+                WHERE Discriminator = @discriminator AND IsSoftDeleted = 0 AND IdFiscal = @idFiscal
+            `);
+        if (validacion.recordset.length > 0) {
+            return res.status(400).json({ Message: "Ya existe un Proveedor con ese ID Fiscal." });
+        }
+
+        const body = {
+            Nombre: nombreTrim,
+            IdFiscal: idFiscalTrim,
+            TipoIdFiscalId: pais.tipoIdFiscalId,
+            TipoIdFiscalDescripcion: PROVEEDOR_DEFAULTS.TipoIdFiscalDescripcion,
+            GrupoPersonaId: PROVEEDOR_DEFAULTS.GrupoPersonaId,
+            GrupoPersonaNombre: PROVEEDOR_DEFAULTS.GrupoPersonaNombre,
+            Url: PROVEEDOR_DEFAULTS.Url,
+            RazonSocial: nombreTrim,
+            PaisId: pais.id,
+            PaisDescripcion: pais.descripcion,
+            LimiteDeCredito: PROVEEDOR_DEFAULTS.LimiteDeCredito,
+            TiempoDeCredito: PROVEEDOR_DEFAULTS.TiempoDeCredito,
+            SegmentoId: PROVEEDOR_DEFAULTS.SegmentoId,
+            SegmentoNombre: PROVEEDOR_DEFAULTS.SegmentoNombre,
+            PresentoComprobantePagos,
+            Referencia: generarReferencia(nombreTrim),
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/PersonaProveedorServiceApi/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`PersonaProveedorServiceApi/Create → HTTP ${resp.status} para ${nombreTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`PersonaProveedorServiceApi/Create → ${nombreTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Proveedor "${nombreTrim}" (${pais.descripcion})`,
+            referencia: idFiscalTrim
+        });
+
+        // La respuesta de Azure no garantiza un campo de Id estable; se vuelve a consultar por
+        // IdFiscal (recién validado como único) para obtener el Id real y poder usarlo después
+        // en la creación del Código ERP.
+        const personaCreada = await poolPersonas.request()
+            .input('discriminatorNuevo', sql.VarChar, DISCRIMINATOR_POR_TIPO.proveedor)
+            .input('idFiscalNuevo', sql.VarChar, idFiscalTrim)
+            .query(`
+                SELECT TOP 1 Id FROM [dbo].[Persona]
+                WHERE Discriminator = @discriminatorNuevo AND IsSoftDeleted = 0 AND IdFiscal = @idFiscalNuevo
+            `);
+        const personaId = personaCreada.recordset[0]?.Id || null;
+
+        return res.status(200).json({ Message: "Proveedor creado con éxito", Data: data, Referencia: body.Referencia, PersonaId: personaId });
+
+    } catch (error) {
+        console.error("Error en crearProveedor:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Códigos ERP activos ya registrados para un proveedor puntual. Un mismo proveedor puede tener
+// varios (uno por Sociedad/País en el que opera); lo que no puede repetirse es el mismo Código
+// en dos proveedores distintos (ver /crearCodigoErpProveedor).
+app.post('/codigosErpProveedor', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaJuridicaProveedorId } = req.body;
+        if (!PersonaJuridicaProveedorId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaJuridicaProveedorId)
+            .query(`
+                SELECT [Id], [Codigo], [Sociedad], [Pais]
+                FROM [dbo].[CodigoErp]
+                WHERE [PersonaJuridicaProveedorId] = @personaId
+                  AND [IsSoftDeleted] = 0
+                ORDER BY [Codigo]
+            `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en codigosErpProveedor:", error);
+        return res.status(500).json({ Message: "Error al validar Código ERP", Error: error.message });
+    }
+});
+
+app.post('/crearCodigoErpProveedor', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaJuridicaProveedorId, Codigo } = req.body;
+
+        const codigoTrim = (Codigo || "").trim();
+
+        if (!PersonaJuridicaProveedorId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+        if (!codigoTrim) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+
+        // El País/Sociedad no lo elige el usuario en este paso: se toma del País con el que
+        // ya quedó registrado el proveedor en Personas (Persona.PaisId), no de una selección nueva.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const personaInfo = await poolPersonas.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaJuridicaProveedorId)
+            .query(`SELECT [PaisId] FROM [dbo].[Persona] WHERE [Id] = @personaId`);
+
+        if (personaInfo.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el proveedor." });
+        }
+
+        const paisIdPersona = personaInfo.recordset[0].PaisId;
+        const pais = Object.values(PAISES_PROVEEDOR_CLIENTE).find(
+            (p) => String(p.id).toUpperCase() === String(paisIdPersona).toUpperCase()
+        );
+        if (!pais) {
+            return res.status(400).json({ Message: "No se pudo determinar el País/Sociedad de este proveedor." });
+        }
+
+        // El mismo Código no puede pertenecer a dos proveedores distintos (un proveedor sí
+        // puede tener varios Códigos ERP distintos, uno por País/Sociedad).
+        const validacion = await poolPersonas.request()
+            .input('codigo', sql.VarChar, codigoTrim)
+            .query(`
+                SELECT TOP 1 [Id], [PersonaJuridicaProveedorId]
+                FROM [dbo].[CodigoErp]
+                WHERE [Codigo] = @codigo AND [IsSoftDeleted] = 0
+            `);
+
+        if (validacion.recordset.length > 0) {
+            const existente = validacion.recordset[0];
+            const mismoProveedor = String(existente.PersonaJuridicaProveedorId).toUpperCase() === String(PersonaJuridicaProveedorId).toUpperCase();
+            return res.status(400).json({
+                Message: mismoProveedor
+                    ? "Este Código ERP ya está registrado para este proveedor."
+                    : "Este Código ERP ya pertenece a otro proveedor."
+            });
+        }
+
+        const body = {
+            Codigo: codigoTrim,
+            Sociedad: pais.sociedad,
+            Pais: pais.descripcion,
+            PersonaJuridicaProveedorId,
+            SistemaId: CODIGO_ERP_DEFAULTS.SistemaId,
+            SistemaDescripcion: CODIGO_ERP_DEFAULTS.SistemaDescripcion,
+            TipoPersonaDestino: CODIGO_ERP_DEFAULTS.TipoPersonaDestino,
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErpProveedorServiceApi/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErpProveedorServiceApi/Create → HTTP ${resp.status} para ${codigoTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErpProveedorServiceApi/Create → ${codigoTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Código ERP "${codigoTrim}" (${pais.descripcion})`,
+            referencia: codigoTrim
+        });
+
+        return res.status(200).json({
+            Message: "Código ERP creado con éxito",
+            Data: data,
+            Codigo: codigoTrim,
+            Sociedad: pais.sociedad,
+            Pais: pais.descripcion
+        });
+
+    } catch (error) {
+        console.error("Error en crearCodigoErpProveedor:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/modificarCodigoErpProveedor', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, Codigo, ModifiedBy } = req.body;
+        const codigoTrim = (Codigo || "").trim();
+
+        if (!Id) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+        if (!codigoTrim) {
+            return res.status(400).json({ Message: "El nuevo Código ERP es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        // El mismo Código no puede pertenecer a otro proveedor (excluyendo el propio registro
+        // que se está editando, si el usuario no cambió el valor).
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const validacion = await poolPersonas.request()
+            .input('codigo', sql.VarChar, codigoTrim)
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`
+                SELECT TOP 1 [Id]
+                FROM [dbo].[CodigoErp]
+                WHERE [Codigo] = @codigo AND [IsSoftDeleted] = 0 AND [Id] <> @id
+            `);
+        if (validacion.recordset.length > 0) {
+            return res.status(400).json({ Message: "Este Código ERP ya pertenece a otro proveedor." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/ModificarCodigo", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ModifiedBy, Id, Codigo: codigoTrim })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErp/ModificarCodigo → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErp/ModificarCodigo → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Modificó el Código ERP a "${codigoTrim}"`,
+            referencia: codigoTrim
+        });
+
+        return res.status(200).json({ Message: "Código ERP modificado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en modificarCodigoErpProveedor:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/eliminarCodigoErpProveedor', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, ModifiedBy } = req.body;
+
+        if (!Id) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/Delete", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ModifiedBy, Id })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErp/Delete → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErp/Delete → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Eliminó un Código ERP",
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Código ERP eliminado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en eliminarCodigoErpProveedor:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Tenants (bases contables) disponibles para crear el Proveedor en CFO (api/Proveedor/Create).
+// No corresponden 1:1 con los Países de Personas: El Salvador, Guatemala y Nicaragua comparten
+// el mismo TenantId, y hay dos Tenants especiales que no son país (Corporación Dinant, Dinant
+// Exports) — así lo confirmó el negocio, no es un error de transcripción.
+const TENANTS_PROVEEDOR_CFO = {
+    honduras: { id: "30D1014C-D443-42EE-8015-005FB0D9FA00", label: "Honduras" },
+    elSalvador: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "El Salvador" },
+    guatemala: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "Guatemala" },
+    nicaragua: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "Nicaragua" },
+    costaRica: { id: "13A8389D-9064-4A5B-A156-2235B8A2751A", label: "Costa Rica" },
+    corporacionDinant: { id: "8092E57D-03A5-44D3-B271-0F27EBF3D818", label: "Corporación Dinant" },
+    dinantExports: { id: "CF884F18-6C35-4703-A48B-21FD0680B2CE", label: "Dinant Exports" },
+};
+
+// Tenants en los que un proveedor (por PersonaId) ya está creado en CFO. Se consulta directo
+// contra CfoNetCore.dbo.Proveedor (no solo lo creado en esta sesión) para poder avisar si el
+// usuario intenta crear de nuevo un Tenant que ya existe, aunque sea en una sesión distinta.
+app.post('/proveedoresCfoPorPersona', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId } = req.body;
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaId)
+            .query(`
+                SELECT
+                    p.[Id], p.[TenantId], p.[AplicaRetencion], p.[IsProveedorSujetoExcluido], p.[Moneda_Value],
+                    p.[OficialDePagoId], opPago.[Nombre] AS OficialDePagoNombre,
+                    p.[OficialSolicitudDePagoId], opSolicitud.[Nombre] AS OficialSolicitudDePagoNombre
+                FROM [dbo].[Proveedor] p
+                LEFT JOIN [dbo].[Operador] opPago ON opPago.[Id] = p.[OficialDePagoId]
+                LEFT JOIN [dbo].[Operador] opSolicitud ON opSolicitud.[Id] = p.[OficialSolicitudDePagoId]
+                WHERE p.[PersonaId] = @personaId AND p.[IsSoftDeleted] = 0
+            `);
+
+        // Los Sitios y Materiales son varios por Proveedor, así que se traen aparte y se agrupan
+        // por ProveedorId en vez de venir en la misma fila que Moneda/Oficiales.
+        const proveedorIds = resultado.recordset.map((row) => row.Id);
+        const sitiosPorProveedor = {};
+        const materialesPorProveedor = {};
+        if (proveedorIds.length > 0) {
+            const requestSitios = pool.request();
+            const paramsSitios = proveedorIds.map((id, i) => {
+                const nombre = `pid${i}`;
+                requestSitios.input(nombre, sql.UniqueIdentifier, id);
+                return `@${nombre}`;
+            });
+            const resultadoSitios = await requestSitios.query(`
+                SELECT ps.[ProveedorId], s.[Id], s.[Nombre]
+                FROM [dbo].[ProveedorSitio] ps
+                JOIN [dbo].[Sitio] s ON s.[Id] = ps.[SitioId]
+                WHERE ps.[ProveedorId] IN (${paramsSitios.join(', ')})
+                  AND ps.[IsSoftDeleted] = 0 AND s.[IsSoftDeleted] = 0
+                ORDER BY s.[Nombre]
+            `);
+            resultadoSitios.recordset.forEach((row) => {
+                const clave = String(row.ProveedorId).toUpperCase();
+                if (!sitiosPorProveedor[clave]) sitiosPorProveedor[clave] = [];
+                sitiosPorProveedor[clave].push({ Id: row.Id, Nombre: row.Nombre });
+            });
+
+            const requestMateriales = pool.request();
+            const paramsMateriales = proveedorIds.map((id, i) => {
+                const nombre = `mid${i}`;
+                requestMateriales.input(nombre, sql.UniqueIdentifier, id);
+                return `@${nombre}`;
+            });
+            const resultadoMateriales = await requestMateriales.query(`
+                SELECT [ProveedorId], [Id], [Descripcion], [CodigoMaterial]
+                FROM [dbo].[MaterialProveedor]
+                WHERE [ProveedorId] IN (${paramsMateriales.join(', ')}) AND [IsSoftDeleted] = 0
+                ORDER BY [Descripcion]
+            `);
+            resultadoMateriales.recordset.forEach((row) => {
+                const clave = String(row.ProveedorId).toUpperCase();
+                if (!materialesPorProveedor[clave]) materialesPorProveedor[clave] = [];
+                materialesPorProveedor[clave].push({ Id: row.Id, Descripcion: row.Descripcion, CodigoMaterial: row.CodigoMaterial });
+            });
+        }
+
+        const filas = resultado.recordset.flatMap((row) =>
+            Object.entries(TENANTS_PROVEEDOR_CFO)
+                .filter(([, t]) => String(t.id).toUpperCase() === String(row.TenantId).toUpperCase())
+                .map(([key, t]) => ({
+                    Id: row.Id,
+                    TenantKey: key,
+                    Pais: t.label,
+                    AplicaRetencion: !!row.AplicaRetencion,
+                    IsProveedorSujetoExcluido: !!row.IsProveedorSujetoExcluido,
+                    MonedaValue: row.Moneda_Value ?? null,
+                    OficialDePagoNombre: row.OficialDePagoNombre || null,
+                    OficialSolicitudDePagoNombre: row.OficialSolicitudDePagoNombre || null,
+                    Sitios: sitiosPorProveedor[String(row.Id).toUpperCase()] || [],
+                    Materiales: materialesPorProveedor[String(row.Id).toUpperCase()] || []
+                }))
+        );
+
+        return res.json(filas);
+
+    } catch (error) {
+        console.error("Error en proveedoresCfoPorPersona:", error);
+        return res.status(500).json({ Message: "Error al validar Proveedor en CFO", Error: error.message });
+    }
+});
+
+// TipoPersonaDestino en el sistema externo: 4 = Proveedor, 3 = Cliente. Este módulo por ahora
+// solo crea Proveedores, así que siempre se asigna 4 automáticamente al crear — no es una opción
+// que el usuario deba elegir. El 3 se usará cuando se implemente la creación de Clientes.
+const TIPO_PERSONA_DESTINO_PROVEEDOR = 4;
+
+app.post('/crearProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId, TenantKey, AplicaRetencion, IsProveedorSujetoExcluido, CreatedBy } = req.body;
+        const tenant = TENANTS_PROVEEDOR_CFO[TenantKey];
+
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+        if (!tenant) {
+            return res.status(400).json({ Message: "Debe seleccionar un País/Tenant válido." });
+        }
+        if (typeof AplicaRetencion !== "boolean") {
+            return res.status(400).json({ Message: "Debe indicar si aplica retención." });
+        }
+        if (typeof IsProveedorSujetoExcluido !== "boolean") {
+            return res.status(400).json({ Message: "Debe indicar si es Proveedor Sujeto Excluido." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        // El Nombre no se toma de un campo libre del frontend: se extrae de Personas, que es
+        // donde quedó registrado cuando se creó/validó el proveedor.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const personaInfo = await poolPersonas.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaId)
+            .query(`SELECT [Nombre] FROM [dbo].[Persona] WHERE [Id] = @personaId`);
+
+        if (personaInfo.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el proveedor en Personas." });
+        }
+        const nombre = personaInfo.recordset[0].Nombre;
+
+        const body = {
+            Nombre: nombre,
+            AplicaRetencion,
+            CreatedBy,
+            PersonaId,
+            TenantId: tenant.id,
+            IsProveedorSujetoExcluido,
+        };
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Proveedor/Create → HTTP ${resp.status} para ${PersonaId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`Proveedor/Create → ${PersonaId}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        // Todo Proveedor creado desde este módulo es, por definición, un Proveedor (no un
+        // Cliente), así que el TipoPersonaDestino se asigna aquí mismo, automáticamente, sin
+        // pedírselo al usuario. Si esta llamada fallara no se revierte la creación del
+        // Proveedor (ya se confirmó con éxito); solo se deja registrado en el log del servidor.
+        const proveedorCfoId = data?.ProveedorVm?.Id;
+        if (proveedorCfoId) {
+            try {
+                const respTipo = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetTipoPersonaDestino", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ Id: proveedorCfoId, TipoPersonaDestino: TIPO_PERSONA_DESTINO_PROVEEDOR, ModifiedBy: CreatedBy })
+                });
+                if (!respTipo.ok) {
+                    console.error(`Proveedor/SetTipoPersonaDestino (automático) → HTTP ${respTipo.status} para ${proveedorCfoId}:`, await respTipo.text());
+                }
+            } catch (errorTipo) {
+                console.error("Error al asignar TipoPersonaDestino automáticamente:", errorTipo);
+            }
+        } else {
+            console.error(`Proveedor/Create no devolvió ProveedorVm.Id para ${PersonaId}; no se pudo asignar TipoPersonaDestino automáticamente.`);
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Proveedor en CFO "${nombre}" (${tenant.label})`,
+            referencia: nombre
+        });
+
+        return res.status(200).json({ Message: "Proveedor creado en CFO con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Catálogo de Monedas de pago disponibles para un Proveedor en CFO (api/Proveedor/SetMoneda).
+// Los valores son los códigos ISO 4217 numéricos que ya usa el sistema (ver también Moneda:
+// 558 en DOCUMENTO_PROVISIONAL_NIC más abajo).
+const MONEDAS_PROVEEDOR_CFO = {
+    lempiras: { value: 340, label: "Lempiras (HNL)" },
+    dolares: { value: 840, label: "Dólares (USD)" },
+    cordobas: { value: 558, label: "Córdobas (NIO)" },
+    colones: { value: 188, label: "Colones (CRC)" },
+    quetzales: { value: 320, label: "Quetzales (GTQ)" },
+};
+
+app.post('/asignarMonedaProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, MonedaKey, ModifiedBy } = req.body;
+        const moneda = MONEDAS_PROVEEDOR_CFO[MonedaKey];
+
+        if (!Id) {
+            return res.status(400).json({ Message: "El Proveedor en CFO es requerido." });
+        }
+        if (!moneda) {
+            return res.status(400).json({ Message: "Debe seleccionar una Moneda válida." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetMoneda", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ Id, Moneda: moneda.value, ModifiedBy })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Proveedor/SetMoneda → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        // A diferencia de Create, SetMoneda devuelve el ProveedorVm directo (sin campo IsValid),
+        // así que un HTTP 200 ya es la confirmación de éxito.
+        const data = await resp.json().catch(() => null);
+        console.log(`Proveedor/SetMoneda → ${Id}:`, JSON.stringify(data));
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Asignó la Moneda "${moneda.label}" al Proveedor en CFO`,
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Moneda asignada con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en asignarMonedaProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Operadores (CfoNetCore.dbo.Operador) candidatos a Oficial de Pago / Oficial de Solicitud de
+// Pago de un Proveedor. Se busca por nombre parcial porque el usuario solo conoce el nombre del
+// operador, no su Id.
+app.post('/buscarOperador', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Nombre } = req.body;
+        const nombreTrim = (Nombre || "").trim();
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "Ingrese al menos el nombre del Operador para buscar." });
+        }
+
+        // Se busca palabra por palabra (nombre, apellido, sea el primero o el segundo, en
+        // cualquier orden) en vez de la frase completa tal cual, para que "Maria Fiallos"
+        // encuentre a "Maria Alejandra Fiallos Pineda" aunque no queden juntas en el campo.
+        const palabras = nombreTrim.split(/\s+/).filter(Boolean);
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const request = pool.request();
+        const condiciones = palabras.map((palabra, i) => {
+            const nombreParam = `palabra${i}`;
+            request.input(nombreParam, sql.VarChar, `%${palabra}%`);
+            return `[Nombre] LIKE @${nombreParam}`;
+        });
+
+        const resultado = await request.query(`
+            SELECT TOP 20 [Id], [Nombre]
+            FROM [dbo].[Operador]
+            WHERE (${condiciones.join(' AND ')}) AND [IsSoftDeleted] = 0
+            ORDER BY [Nombre]
+        `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en buscarOperador:", error);
+        return res.status(500).json({ Message: "Error al buscar el Operador", Error: error.message });
+    }
+});
+
+app.post('/asignarOficialSolicitudDePagoProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { ProveedorId, OficialSolicitudDePagoId, ModifiedBy } = req.body;
+
+        if (!ProveedorId) {
+            return res.status(400).json({ Message: "El Proveedor en CFO es requerido." });
+        }
+        if (!OficialSolicitudDePagoId) {
+            return res.status(400).json({ Message: "Debe seleccionar un Operador." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetOficialSolicitudDePago", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ProveedorId, OficialSolicitudDePagoId, ModifiedBy })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Proveedor/SetOficialSolicitudDePago → HTTP ${resp.status} para ${ProveedorId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Asignó el Oficial de Solicitud de Pago al Proveedor en CFO",
+            referencia: ProveedorId
+        });
+
+        return res.status(200).json({ Message: "Oficial de Solicitud de Pago asignado con éxito" });
+
+    } catch (error) {
+        console.error("Error en asignarOficialSolicitudDePagoProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/asignarOficialDePagoProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { ProveedorId, OficialDePagoId, ModifiedBy } = req.body;
+
+        if (!ProveedorId) {
+            return res.status(400).json({ Message: "El Proveedor en CFO es requerido." });
+        }
+        if (!OficialDePagoId) {
+            return res.status(400).json({ Message: "Debe seleccionar un Operador." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetOficialDePago", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ProveedorId, OficialDePagoId, ModifiedBy })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Proveedor/SetOficialDePago → HTTP ${resp.status} para ${ProveedorId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Asignó el Oficial de Pago al Proveedor en CFO",
+            referencia: ProveedorId
+        });
+
+        return res.status(200).json({ Message: "Oficial de Pago asignado con éxito" });
+
+    } catch (error) {
+        console.error("Error en asignarOficialDePagoProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Catálogo completo de Sitios (CfoNetCore.dbo.Sitio) para el desplegable de "agregar Sitio" a
+// un Proveedor en CFO. Es una lista corta (decenas de filas), así que se trae completa en vez
+// de buscarla por nombre.
+app.post('/listarSitios', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request().query(`
+            SELECT [Id], [Nombre]
+            FROM [dbo].[Sitio]
+            WHERE [IsSoftDeleted] = 0
+            ORDER BY [Nombre]
+        `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en listarSitios:", error);
+        return res.status(500).json({ Message: "Error al listar los Sitios", Error: error.message });
+    }
+});
+
+// Marca fija que exige AddProveedorSitio y no varía entre asignaciones (así lo confirmó el
+// negocio con el ejemplo de JSON compartido).
+const MARCA_SITIO_DEFAULT = 0;
+
+app.post('/agregarSitioProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { ProveedorId, SitioId, CreatedBy } = req.body;
+
+        if (!ProveedorId) {
+            return res.status(400).json({ Message: "El Proveedor en CFO es requerido." });
+        }
+        if (!SitioId) {
+            return res.status(400).json({ Message: "Debe seleccionar un Sitio." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/AddProveedorSitio", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ProveedorId, SitioId, CreatedBy, Marca: MARCA_SITIO_DEFAULT })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Proveedor/AddProveedorSitio → HTTP ${resp.status} para ${ProveedorId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Agregó un Sitio al Proveedor en CFO",
+            referencia: ProveedorId
+        });
+
+        return res.status(200).json({ Message: "Sitio agregado con éxito" });
+
+    } catch (error) {
+        console.error("Error en agregarSitioProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Catálogo completo de MaterialTenant (CfoNetCore.dbo.MaterialTenant) para el Tenant del
+// registro de Proveedor en CFO con el que se está trabajando, para que el usuario elija el más
+// adecuado de la lista en vez de tener que saber de memoria la Cuenta Mayor y el Código ERP.
+app.post('/listarMaterialesTenant', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { TenantKey } = req.body;
+        const tenant = TENANTS_PROVEEDOR_CFO[TenantKey];
+
+        if (!tenant) {
+            return res.status(400).json({ Message: "No se pudo determinar el País/Tenant de este registro." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('tenantId', sql.UniqueIdentifier, tenant.id)
+            .query(`
+                SELECT [Id], [Descripcion], [CuentaMayor], [CodigoErpReembolso]
+                FROM [dbo].[MaterialTenant]
+                WHERE [TenantId] = @tenantId AND [IsSoftDeleted] = 0
+                ORDER BY [Descripcion]
+            `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en listarMaterialesTenant:", error);
+        return res.status(500).json({ Message: "Error al listar los Materiales Tenant", Error: error.message });
+    }
+});
+
+app.post('/agregarMaterialProveedorCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId, MaterialTenantId, Descripcion, CreatedBy } = req.body;
+        const descripcionTrim = (Descripcion || "").trim();
+
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+        if (!MaterialTenantId) {
+            return res.status(400).json({ Message: "Debe buscar y encontrar el Material Tenant (Cuenta Mayor + Código ERP) antes de crear." });
+        }
+        if (!descripcionTrim) {
+            return res.status(400).json({ Message: "El Nombre del Material es requerido." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        // Igual que la Referencia del Proveedor: primera letra de cada una de las primeras 3
+        // palabras del Nombre (o las primeras 3 letras si es una sola palabra). Al reutilizar
+        // siempre el mismo Nombre para Honduras/Corporación Dinant/Dinant Exports, este código
+        // sale idéntico en los tres sin necesidad de lógica extra.
+        const codigoMaterial = generarReferencia(descripcionTrim);
+
+        const body = {
+            Descripcion: descripcionTrim,
+            // A diferencia de lo que parecía por la columna guardada, el API SÍ espera aquí el
+            // Id crudo de la Persona (Personas.dbo.Persona.Id): internamente busca el Proveedor
+            // por PersonaId + el Tenant del MaterialTenantId dado. Mandar el Id de Proveedor en
+            // CFO por Tenant (como Moneda/Oficiales/Sitios) da "No existe proveedor".
+            PersonaId,
+            MaterialTenantId,
+            CreatedBy,
+            CodigoMaterial: codigoMaterial,
+        };
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/MaterialProveedor/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`MaterialProveedor/Create → HTTP ${resp.status} para ${PersonaId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`MaterialProveedor/Create → ${PersonaId}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Agregó el Material "${descripcionTrim}" (${codigoMaterial}) al Proveedor en CFO`,
+            referencia: PersonaId
+        });
+
+        return res.status(200).json({ Message: "Material agregado con éxito", Data: data, CodigoMaterial: codigoMaterial });
+
+    } catch (error) {
+        console.error("Error en agregarMaterialProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Da de alta un Material Tenant nuevo en el catálogo (CfoNetCore.dbo.MaterialTenant) cuando el
+// usuario ya tiene la Cuenta Mayor y el Código ERP pero todavía no existe para el País/Tenant
+// que necesita. El TenantId se resuelve del mismo catálogo fijo que usa el resto del módulo.
+app.post('/crearMaterialTenant', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { CuentaMayor, CodigoErp, Descripcion, TenantKey, CreatedBy } = req.body;
+        const cuentaMayorTrim = (CuentaMayor || "").trim();
+        const codigoErpTrim = (CodigoErp || "").trim();
+        const descripcionTrim = (Descripcion || "").trim();
+        const tenant = TENANTS_PROVEEDOR_CFO[TenantKey];
+
+        if (!cuentaMayorTrim) {
+            return res.status(400).json({ Message: "La Cuenta Mayor es requerida." });
+        }
+        if (!codigoErpTrim) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+        if (!descripcionTrim) {
+            return res.status(400).json({ Message: "La Descripción es requerida." });
+        }
+        if (!tenant) {
+            return res.status(400).json({ Message: "Debe seleccionar un País/Tenant válido." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        const body = {
+            CodigoErpReembolso: codigoErpTrim,
+            CuentaMayor: cuentaMayorTrim,
+            CreatedBy,
+            Descripcion: descripcionTrim,
+            TenantId: tenant.id,
+        };
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/MaterialTenant/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`MaterialTenant/Create → HTTP ${resp.status} para ${cuentaMayorTrim}/${codigoErpTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`MaterialTenant/Create → ${descripcionTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Material Tenant "${descripcionTrim}" (${tenant.label})`,
+            referencia: `${cuentaMayorTrim} / ${codigoErpTrim}`
+        });
+
+        return res.status(200).json({
+            Message: "Material Tenant creado con éxito",
+            Data: data,
+            Id: data?.MaterialTenantVm?.Id,
+            Descripcion: descripcionTrim,
+            CuentaMayor: cuentaMayorTrim,
+            CodigoErpReembolso: codigoErpTrim
+        });
+
+    } catch (error) {
+        console.error("Error en crearMaterialTenant:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// --- Cuentas de Banco del Proveedor (api de Personas: CuentaBancoPersonaService/Banco/TipoCuenta) ---
+// A diferencia de Moneda/Oficiales/Sitios/Materiales (que son por Tenant/Proveedor en CFO), la
+// Cuenta de Banco cuelga directo de la Persona (PersonaId = Personas.dbo.Persona.Id), verificado
+// contra Personas.dbo.CuentaBancoPersona.PersonaId.
+
+// Mismos 5 países que PAISES_PROVEEDOR_CLIENTE (mismos Ids), pero con la descripción en el mismo
+// formato (Title Case) que ya usan los Bancos reales existentes en Personas.dbo.Banco — a
+// diferencia de PAISES_PROVEEDOR_CLIENTE.descripcion, que está en MAYÚSCULAS para otro consumo.
+const PAISES_BANCO = {
+    honduras: { id: "65507ECF-249E-454B-A95A-0061BA0FA2BA", descripcion: "Honduras" },
+    elSalvador: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", descripcion: "El Salvador" },
+    guatemala: { id: "30D1014C-D443-42EE-8015-005FB0D9FA00", descripcion: "Guatemala" },
+    nicaragua: { id: "C7194841-BB94-4903-ADD7-0065CC7AF42C", descripcion: "Nicaragua" },
+    costaRica: { id: "27E0710C-A5BC-4C77-AFC7-137AF86DE6AA", descripcion: "Costa Rica" },
+};
+
+// El API de Personas espera el código de Moneda como texto (enum serializado por nombre), pero
+// en Personas.dbo.CuentaBancoPersona.Moneda queda guardado como el mismo entero ISO 4217 que ya
+// usa CfoNetCore.dbo.Proveedor.Moneda_Value — se verificó contra datos reales de esa tabla.
+const MONEDAS_CUENTA_BANCO = {
+    lempiras: { codigo: "HNL", valorIso: 340, label: "Lempiras (HNL)" },
+    dolares: { codigo: "USD", valorIso: 840, label: "Dólares (USD)" },
+    cordobas: { codigo: "NIO", valorIso: 558, label: "Córdobas (NIO)" },
+    colones: { codigo: "CRC", valorIso: 188, label: "Colones (CRC)" },
+    quetzales: { codigo: "GTQ", valorIso: 320, label: "Quetzales (GTQ)" },
+};
+
+// Create espera el entero crudo (probado contra el servicio real: mandar el nombre del enum
+// como texto da "Input string was not in a correct format"), pero ModificarTipoPersonaDestino
+// sí espera el nombre del enum como texto — también probado contra el servicio real. 4/3 son
+// los mismos valores que ya usa CfoNetCore.dbo.Proveedor.TipoPersonaDestino, y el API los
+// nombra como "JuridicaProveedor"/"JuridicaCliente" (con el prefijo "Juridica").
+const TIPO_PERSONA_DESTINO_CUENTA_BANCO = {
+    proveedor: { valorCreate: 4, valorModificar: "JuridicaProveedor", label: "Proveedor" },
+    cliente: { valorCreate: 3, valorModificar: "JuridicaCliente", label: "Cliente" },
+};
+
+// Solo estas dos opciones (Cheques/Ahorro), con los Ids reales de Personas.dbo.TipoCuenta — hay
+// una tercera fila duplicada ("AHORRO") en esa tabla que no se expone aquí a propósito.
+const TIPOS_CUENTA_BANCO = {
+    cheques: { id: "6FAC7AE8-491E-4078-87F9-148C89B76DD7", descripcion: "Cheques" },
+    ahorro: { id: "899C726F-99C6-4C15-8913-148C89CE0A12", descripcion: "Ahorro" },
+};
+
+app.post('/cuentasBancoPersona', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId } = req.body;
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaId)
+            .query(`
+                SELECT [Id], [BancoId], [Numero], [BancoNombre], [TipoCuentaDescripcion], [Moneda], [TipoPersonaDestino], [CuentaH2H]
+                FROM [dbo].[CuentaBancoPersona]
+                WHERE [PersonaId] = @personaId AND [IsSoftDeleted] = 0
+                ORDER BY [BancoNombre]
+            `);
+
+        const filas = resultado.recordset.map((row) => {
+            const monedaEntry = Object.values(MONEDAS_CUENTA_BANCO).find((m) => m.valorIso === row.Moneda);
+            return {
+                Id: row.Id,
+                BancoId: row.BancoId,
+                Numero: row.Numero,
+                BancoNombre: row.BancoNombre,
+                TipoCuentaDescripcion: row.TipoCuentaDescripcion,
+                Moneda: monedaEntry?.label || String(row.Moneda),
+                TipoPersonaDestino: row.TipoPersonaDestino === 4 ? "Proveedor" : row.TipoPersonaDestino === 3 ? "Cliente" : String(row.TipoPersonaDestino),
+                CuentaH2H: !!row.CuentaH2H
+            };
+        });
+
+        return res.json(filas);
+
+    } catch (error) {
+        console.error("Error en cuentasBancoPersona:", error);
+        return res.status(500).json({ Message: "Error al listar las Cuentas de Banco", Error: error.message });
+    }
+});
+
+// Catálogo completo de Bancos (Personas.dbo.Banco) para el buscador de "agregar Cuenta de
+// Banco". Es una lista corta (decenas de filas), así que se trae completa.
+app.post('/listarBancos', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request().query(`
+            SELECT [Id], [Nombre], [PaisDescripcion]
+            FROM [dbo].[Banco]
+            WHERE [IsSoftDeleted] = 0
+            ORDER BY [Nombre]
+        `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en listarBancos:", error);
+        return res.status(500).json({ Message: "Error al listar los Bancos", Error: error.message });
+    }
+});
+
+app.post('/crearBanco', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Nombre, PaisKey } = req.body;
+        const nombreTrim = (Nombre || "").trim();
+        const pais = PAISES_BANCO[PaisKey];
+
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "El Nombre del Banco es requerido." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Debe seleccionar un País válido." });
+        }
+
+        const body = {
+            Nombre: nombreTrim,
+            PaisId: pais.id,
+            PaisDescripcion: pais.descripcion,
+            Swift: "",
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/Banco/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Banco/Create → HTTP ${resp.status} para ${nombreTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`Banco/Create → ${nombreTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
+        }
+
+        // La respuesta cruda no tiene schema documentado (no se sabe con certeza el campo del
+        // Id), así que se re-consulta el Banco recién creado por Nombre + País, igual que se
+        // hace con Persona/Proveedor tras crearlo.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const nuevoBanco = await poolPersonas.request()
+            .input('nombre', sql.VarChar, nombreTrim)
+            .input('paisId', sql.UniqueIdentifier, pais.id)
+            .query(`
+                SELECT TOP 1 [Id] FROM [dbo].[Banco]
+                WHERE [Nombre] = @nombre AND [PaisId] = @paisId AND [IsSoftDeleted] = 0
+                ORDER BY [CreatedDate] DESC
+            `);
+        const bancoId = nuevoBanco.recordset[0]?.Id || null;
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Banco "${nombreTrim}" (${pais.descripcion})`,
+            referencia: nombreTrim
+        });
+
+        return res.status(200).json({ Message: "Banco creado con éxito", Id: bancoId, Nombre: nombreTrim, PaisDescripcion: pais.descripcion });
+
+    } catch (error) {
+        console.error("Error en crearBanco:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/crearCuentaBancoPersona', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Numero, PersonaId, BancoId, BancoNombre, TipoCuentaKey, MonedaKey, TipoPersonaDestinoKey, CreatedBy } = req.body;
+        const numeroTrim = (Numero || "").trim();
+        const bancoNombreTrim = (BancoNombre || "").trim();
+        const tipoCuenta = TIPOS_CUENTA_BANCO[TipoCuentaKey];
+        const moneda = MONEDAS_CUENTA_BANCO[MonedaKey];
+        const tipoPersonaDestino = TIPO_PERSONA_DESTINO_CUENTA_BANCO[TipoPersonaDestinoKey];
+
+        if (!numeroTrim) {
+            return res.status(400).json({ Message: "El Número de Cuenta es requerido." });
+        }
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El proveedor es requerido." });
+        }
+        if (!BancoId || !bancoNombreTrim) {
+            return res.status(400).json({ Message: "Debe seleccionar un Banco." });
+        }
+        if (!tipoCuenta) {
+            return res.status(400).json({ Message: "Debe seleccionar el Tipo de Cuenta." });
+        }
+        if (!moneda) {
+            return res.status(400).json({ Message: "Debe seleccionar la Moneda." });
+        }
+        if (!tipoPersonaDestino) {
+            return res.status(400).json({ Message: "Debe indicar si es Proveedor o Cliente." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        const body = {
+            Numero: numeroTrim,
+            PersonaId,
+            BancoId,
+            BancoNombre: bancoNombreTrim,
+            TipoCuentaId: tipoCuenta.id,
+            TipoCuentaDescripcion: tipoCuenta.descripcion,
+            Moneda: moneda.codigo,
+            TipoPersonaDestino: tipoPersonaDestino.valorCreate,
+            CuentaH2H: true,
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CuentaBancoPersonaService/Create → HTTP ${resp.status} para ${numeroTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CuentaBancoPersonaService/Create → ${numeroTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó la Cuenta de Banco "${numeroTrim}" (${bancoNombreTrim})`,
+            referencia: PersonaId
+        });
+
+        return res.status(200).json({ Message: "Cuenta de Banco creada con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearCuentaBancoPersona:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/modificarCuentaBancoNumero', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, BancoId, BancoNombre, Numero, ModifiedBy } = req.body;
+        const numeroTrim = (Numero || "").trim();
+        const bancoNombreTrim = (BancoNombre || "").trim();
+
+        if (!Id) {
+            return res.status(400).json({ Message: "La Cuenta de Banco es requerida." });
+        }
+        if (!BancoId || !bancoNombreTrim) {
+            return res.status(400).json({ Message: "Debe seleccionar un Banco." });
+        }
+        if (!numeroTrim) {
+            return res.status(400).json({ Message: "El Número de Cuenta es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/ModificarBancoIdNombreYNumero", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ Id, ModifiedBy, BancoId, BancoNombre: bancoNombreTrim, Numero: numeroTrim })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CuentaBancoPersonaService/ModificarBancoIdNombreYNumero → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CuentaBancoPersonaService/ModificarBancoIdNombreYNumero → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Modificó la Cuenta de Banco a "${numeroTrim}" (${bancoNombreTrim})`,
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Cuenta de Banco modificada con éxito" });
+
+    } catch (error) {
+        console.error("Error en modificarCuentaBancoNumero:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/modificarCuentaBancoTipoPersonaDestino', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, TipoPersonaDestinoKey, ModifiedBy } = req.body;
+        const tipoPersonaDestino = TIPO_PERSONA_DESTINO_CUENTA_BANCO[TipoPersonaDestinoKey];
+
+        if (!Id) {
+            return res.status(400).json({ Message: "La Cuenta de Banco es requerida." });
+        }
+        if (!tipoPersonaDestino) {
+            return res.status(400).json({ Message: "Debe indicar si es Proveedor o Cliente." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/ModificarTipoPersonaDestino", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ Id, ModifiedBy, TipoPersonaDestino: tipoPersonaDestino.valorModificar })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CuentaBancoPersonaService/ModificarTipoPersonaDestino → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CuentaBancoPersonaService/ModificarTipoPersonaDestino → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Modificó el Tipo Persona Destino de la Cuenta de Banco a "${tipoPersonaDestino.label}"`,
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Tipo Persona Destino modificado con éxito" });
+
+    } catch (error) {
+        console.error("Error en modificarCuentaBancoTipoPersonaDestino:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/eliminarCuentaBancoPersona', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, ModifiedBy } = req.body;
+
+        if (!Id) {
+            return res.status(400).json({ Message: "La Cuenta de Banco es requerida." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/Delete", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ Id, ModifiedBy })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CuentaBancoPersonaService/Delete → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CuentaBancoPersonaService/Delete → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Eliminó una Cuenta de Banco",
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Cuenta de Banco eliminada con éxito" });
+
+    } catch (error) {
+        console.error("Error en eliminarCuentaBancoPersona:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 export default app;

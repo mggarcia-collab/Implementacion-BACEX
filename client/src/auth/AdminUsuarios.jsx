@@ -8,6 +8,65 @@ function permisoKey(area, modulo) {
   return `${area}:${modulo}`;
 }
 
+// Botón de acción de solo ícono: el nombre de la acción se ve al pasar el mouse
+// (title nativo del navegador) en vez de texto siempre visible junto al ícono.
+function IconButton({ title, onClick, bg, fg, children }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: "32px", height: "32px", borderRadius: "8px", border: "none", cursor: "pointer",
+        background: bg, color: fg, flexShrink: 0
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const IconPencil = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
+const IconShield = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+  </svg>
+);
+const IconLock = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="10" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+const IconUserPlus = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+    <path d="M19 8v6M22 11h-6" />
+  </svg>
+);
+const IconUserMinus = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+    <path d="M22 11h-6" />
+  </svg>
+);
+const IconPower = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" />
+  </svg>
+);
+const IconTrash = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+  </svg>
+);
+
 // Busca en vivo contra la BD de Personas mientras se escribe el nombre completo, y al
 // elegir una coincidencia llena también el correo y guarda el Id real (personaId) que
 // se manda como ModifiedBy/UsuarioId a los servicios externos.
@@ -362,6 +421,29 @@ export default function AdminUsuarios() {
     }
   };
 
+  const toggleAdmin = async (usuario) => {
+    const nuevoValor = !usuario.isAdmin;
+    if (!nuevoValor && !window.confirm(`¿Quitarle el rol de administrador a ${usuario.nombreCompleto}?`)) {
+      return;
+    }
+    try {
+      const response = await apiFetch(`/auth/usuarios/${usuario.id}/admin`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isAdmin: nuevoValor })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        showToast(data?.Message || "No se pudo actualizar el rol del usuario", "warn");
+        return;
+      }
+      setUsuarios((prev) => prev.map((u) => (u.id === usuario.id ? { ...u, isAdmin: nuevoValor } : u)));
+      showToast(data?.Message || "Actualizado", "ok");
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    }
+  };
+
   const toggleActivo = async (usuario) => {
     try {
       const response = await apiFetch(`/auth/usuarios/${usuario.id}/activo`, {
@@ -463,34 +545,43 @@ export default function AdminUsuarios() {
                     <td>{u.isAdmin ? "Todos" : (u.permisos.length || "Ninguno")}</td>
                     <td>{u.activo ? "Activo" : "Inactivo"}</td>
                     <td style={{ textAlign: "right", display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-                      <button
-                        className="btn ghost"
+                      <IconButton
+                        title={editingPerfilUserId === u.id ? "Cerrar edición de perfil" : "Editar perfil"}
+                        bg="#e0edff" fg="#2563eb"
                         onClick={() => (editingPerfilUserId === u.id ? cancelarEdicionPerfil() : abrirEdicionPerfil(u))}
-                        style={{ padding: "6px 12px", fontSize: "12px" }}
                       >
-                        {editingPerfilUserId === u.id ? "Cerrar" : "Editar perfil"}
-                      </button>
-                      <button
-                        className="btn ghost"
+                        <IconPencil />
+                      </IconButton>
+                      <IconButton
+                        title={editingUserId === u.id ? "Cerrar edición de permisos" : "Editar permisos"}
+                        bg="#e0e7ff" fg="#4338ca"
                         onClick={() => (editingUserId === u.id ? cancelarEdicionPermisos() : abrirEdicionPermisos(u))}
-                        style={{ padding: "6px 12px", fontSize: "12px" }}
                       >
-                        {editingUserId === u.id ? "Cerrar" : "Editar permisos"}
-                      </button>
-                      <button
-                        className="btn ghost"
+                        <IconShield />
+                      </IconButton>
+                      <IconButton
+                        title={editingPasswordUserId === u.id ? "Cerrar cambio de contraseña" : "Cambiar contraseña"}
+                        bg="#eef0f2" fg="#475569"
                         onClick={() => (editingPasswordUserId === u.id ? cancelarCambioPassword() : abrirCambioPassword(u))}
-                        style={{ padding: "6px 12px", fontSize: "12px" }}
                       >
-                        {editingPasswordUserId === u.id ? "Cerrar" : "Cambiar contraseña"}
-                      </button>
-                      <button
-                        className={`btn ${u.activo ? "danger" : "primary"}`}
+                        <IconLock />
+                      </IconButton>
+                      <IconButton
+                        title={u.isAdmin ? "Quitar administrador" : "Hacer administrador"}
+                        bg={u.isAdmin ? "#f3e8ff" : "#dcfce7"}
+                        fg={u.isAdmin ? "#7e22ce" : "#16a34a"}
+                        onClick={() => toggleAdmin(u)}
+                      >
+                        {u.isAdmin ? <IconUserMinus /> : <IconUserPlus />}
+                      </IconButton>
+                      <IconButton
+                        title={u.activo ? "Desactivar" : "Activar"}
+                        bg={u.activo ? "#fee2e2" : "#dcfce7"}
+                        fg={u.activo ? "#dc2626" : "#16a34a"}
                         onClick={() => toggleActivo(u)}
-                        style={{ padding: "6px 12px", fontSize: "12px" }}
                       >
-                        {u.activo ? "Desactivar" : "Activar"}
-                      </button>
+                        {u.activo ? <IconTrash /> : <IconPower />}
+                      </IconButton>
                     </td>
                   </tr>
                   {editingPerfilUserId === u.id && (

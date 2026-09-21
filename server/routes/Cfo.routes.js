@@ -1608,6 +1608,32 @@ const CODIGO_ERP_DEFAULTS = {
     TipoPersonaDestino: "4",
 };
 
+// Campos fijos para CodigoErpClienteServiceApi/Create. A diferencia de Proveedor, aquí "Pais"
+// va como el Id (GUID) del País y no como su descripción (confirmado con el JSON de ejemplo:
+// Pais coincide con PAISES_PROVEEDOR_CLIENTE.guatemala.id, no con "GUATEMALA").
+const CODIGO_ERP_CLIENTE_DEFAULTS = {
+    SistemaId: "30D1014C-D443-42EE-8015-005FB0D9FA00",
+    SistemaDescripcion: "SAP",
+    GestionDocumento: true,
+    TipoPersonaDestino: "3",
+};
+
+// Únicos dos Tipos de Sitio habilitados para crear un Sitio de Cliente (confirmado por el
+// negocio; si se agrega un tercero más adelante, avisan para actualizar este catálogo).
+const TIPOS_SITIO_CLIENTE = {
+    sitioFel: { id: "24482BCB-665F-47F1-93DF-2442D490D809", descripcion: "Sitio Cliente FEL" },
+    casaMatriz: { id: "45A91678-6B1B-465A-811B-24350D2F6028", descripcion: "Dirección de Casa Matriz" },
+};
+
+// El Tipo de Sitio de un Sitio de Cliente no lo elige el usuario: depende del País del Sitio
+// (confirmado por el negocio). Nicaragua y Costa Rica todavía no tienen regla definida — si se
+// intenta crear un Sitio en esos Países, se bloquea hasta que confirmen cuál aplica.
+const TIPO_SITIO_POR_PAIS = {
+    honduras: TIPOS_SITIO_CLIENTE.casaMatriz,
+    elSalvador: TIPOS_SITIO_CLIENTE.casaMatriz,
+    guatemala: TIPOS_SITIO_CLIENTE.sitioFel,
+};
+
 // Resto de campos fijos que exige PersonaProveedorServiceApi/Create pero que no varían nunca
 // entre proveedores (no se le piden al usuario).
 const PROVEEDOR_DEFAULTS = {
@@ -1629,6 +1655,46 @@ function generarReferencia(nombre) {
     if (palabras.length === 0) return "";
     if (palabras.length === 1) return palabras[0].slice(0, 3).toUpperCase();
     return palabras.slice(0, 3).map((p) => p[0]).join("").toUpperCase();
+}
+
+// Campos fijos que exige PersonaClienteServiceApi/Create pero que no varían nunca entre
+// clientes (no se le piden al usuario). GrupoPersona/Segmento son distintos a los de Proveedor.
+const CLIENTE_DEFAULTS = {
+    TipoIdFiscalDescripcion: "NIT",
+    GrupoPersonaId: "30D1014C-D443-42EE-8015-005FB0D9FA00",
+    GrupoPersonaNombre: "Grupo Vesta",
+    SegmentoId: "5727BD7B-6A2E-4799-9D3A-12296ACEB804",
+    SegmentoNombre: "Logística",
+};
+
+// Carácter autogenerado para el Cliente: 2 caracteres alfanuméricos, únicos en toda la tabla
+// Persona (el servicio externo rechaza la creación si ya está en uso por cualquier Persona,
+// no solo por otro Cliente). Se intenta primero con letras derivadas del Nombre para que el
+// código sea reconocible, y si ya están ocupadas se recorre el resto del alfabeto/dígitos.
+async function generarCaracterUnico(nombre, poolPersonas) {
+    const usados = await poolPersonas.request().query(`
+        SELECT DISTINCT Caracter FROM [dbo].[Persona] WHERE Caracter IS NOT NULL AND Caracter <> ''
+    `);
+    const ocupados = new Set(usados.recordset.map((r) => String(r.Caracter).toUpperCase()));
+
+    const ALFANUMERICO = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const limpio = String(nombre || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+    const candidatos = [];
+    if (limpio.length >= 2) candidatos.push(limpio.slice(0, 2));
+    if (limpio.length >= 1) {
+        for (const c of ALFANUMERICO) candidatos.push(limpio[0] + c);
+    }
+    for (const a of ALFANUMERICO) {
+        for (const b of ALFANUMERICO) {
+            candidatos.push(a + b);
+        }
+    }
+
+    for (const candidato of candidatos) {
+        if (!ocupados.has(candidato)) return candidato;
+    }
+    throw new Error("No fue posible generar un Carácter único: todas las combinaciones están en uso.");
 }
 
 app.post('/personaExistente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
@@ -1776,6 +1842,105 @@ app.post('/crearProveedor', requirePermission('cfo', 'crearProveedorCliente'), a
 
     } catch (error) {
         console.error("Error en crearProveedor:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/crearCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Nombre, IdFiscal, PaisKey } = req.body;
+
+        const nombreTrim = (Nombre || "").trim();
+        const idFiscalTrim = (IdFiscal || "").trim();
+        const pais = PAISES_PROVEEDOR_CLIENTE[PaisKey];
+
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "El Nombre es requerido." });
+        }
+        if (!idFiscalTrim) {
+            return res.status(400).json({ Message: "El ID Fiscal es requerido." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Debe seleccionar un País válido." });
+        }
+
+        // Revalida en Personas justo antes de crear (no confiar únicamente en la validación
+        // que ya hizo el usuario en pantalla, por si cambió el Nombre/ID Fiscal después).
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const validacion = await poolPersonas.request()
+            .input('discriminator', sql.VarChar, DISCRIMINATOR_POR_TIPO.cliente)
+            .input('idFiscal', sql.VarChar, idFiscalTrim)
+            .query(`
+                SELECT TOP 1 Id FROM [dbo].[Persona]
+                WHERE Discriminator = @discriminator AND IsSoftDeleted = 0 AND IdFiscal = @idFiscal
+            `);
+        if (validacion.recordset.length > 0) {
+            return res.status(400).json({ Message: "Ya existe un Cliente con ese ID Fiscal." });
+        }
+
+        const caracter = await generarCaracterUnico(nombreTrim, poolPersonas);
+
+        const body = {
+            Nombre: nombreTrim,
+            IdFiscal: idFiscalTrim,
+            TipoIdFiscalId: pais.tipoIdFiscalId,
+            TipoIdFiscalDescripcion: CLIENTE_DEFAULTS.TipoIdFiscalDescripcion,
+            GrupoPersonaId: CLIENTE_DEFAULTS.GrupoPersonaId,
+            GrupoPersonaNombre: CLIENTE_DEFAULTS.GrupoPersonaNombre,
+            PaisId: pais.id,
+            PaisDescripcion: pais.descripcion,
+            SegmentoId: CLIENTE_DEFAULTS.SegmentoId,
+            SegmentoNombre: CLIENTE_DEFAULTS.SegmentoNombre,
+            Caracter: caracter,
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/PersonaClienteServiceApi/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`PersonaClienteServiceApi/Create → HTTP ${resp.status} para ${nombreTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`PersonaClienteServiceApi/Create → ${nombreTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Cliente "${nombreTrim}" (${pais.descripcion})`,
+            referencia: idFiscalTrim
+        });
+
+        // La respuesta de Azure no garantiza un campo de Id estable; se vuelve a consultar por
+        // IdFiscal (recién validado como único) para obtener el Id real y poder usarlo después.
+        const personaCreada = await poolPersonas.request()
+            .input('discriminatorNuevo', sql.VarChar, DISCRIMINATOR_POR_TIPO.cliente)
+            .input('idFiscalNuevo', sql.VarChar, idFiscalTrim)
+            .query(`
+                SELECT TOP 1 Id FROM [dbo].[Persona]
+                WHERE Discriminator = @discriminatorNuevo AND IsSoftDeleted = 0 AND IdFiscal = @idFiscalNuevo
+            `);
+        const personaId = personaCreada.recordset[0]?.Id || null;
+
+        return res.status(200).json({ Message: "Cliente creado con éxito", Data: data, Caracter: caracter, PersonaId: personaId });
+
+    } catch (error) {
+        console.error("Error en crearCliente:", error);
         return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
     }
 });
@@ -2038,15 +2203,481 @@ app.post('/eliminarCodigoErpProveedor', requirePermission('cfo', 'crearProveedor
     }
 });
 
-// Tenants (bases contables) disponibles para crear el Proveedor en CFO (api/Proveedor/Create).
-// No corresponden 1:1 con los Países de Personas: El Salvador, Guatemala y Nicaragua comparten
-// el mismo TenantId, y hay dos Tenants especiales que no son país (Corporación Dinant, Dinant
-// Exports) — así lo confirmó el negocio, no es un error de transcripción.
+// Códigos ERP activos ya registrados para un cliente puntual. Igual que en Proveedor, un mismo
+// cliente puede tener varios (uno por Sociedad/País), pero un Código no puede repetirse entre
+// dos clientes/proveedores distintos (ver /crearCodigoErpCliente).
+app.post('/codigosErpCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaJuridicaClienteId } = req.body;
+        if (!PersonaJuridicaClienteId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaJuridicaClienteId)
+            .query(`
+                SELECT [Id], [Codigo], [Sociedad], [Pais]
+                FROM [dbo].[CodigoErp]
+                WHERE [PersonaJuridicaClienteId] = @personaId
+                  AND [IsSoftDeleted] = 0
+                ORDER BY [Codigo]
+            `);
+
+        // A diferencia de Proveedor, en Cliente la columna [Pais] guarda el Id (GUID) y no la
+        // descripción; se resuelve aquí a texto legible para que la lista se vea igual de clara.
+        const filas = resultado.recordset.map((fila) => {
+            const pais = Object.values(PAISES_PROVEEDOR_CLIENTE).find(
+                (p) => String(p.id).toUpperCase() === String(fila.Pais).toUpperCase()
+            );
+            return { ...fila, Pais: pais?.descripcion || fila.Pais };
+        });
+
+        return res.json(filas);
+
+    } catch (error) {
+        console.error("Error en codigosErpCliente:", error);
+        return res.status(500).json({ Message: "Error al validar Código ERP", Error: error.message });
+    }
+});
+
+app.post('/crearCodigoErpCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaJuridicaClienteId, Codigo } = req.body;
+
+        const codigoTrim = (Codigo || "").trim();
+
+        if (!PersonaJuridicaClienteId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+        if (!codigoTrim) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+
+        // El País/Sociedad no lo elige el usuario en este paso: se toma del País con el que
+        // ya quedó registrado el cliente en Personas (Persona.PaisId), no de una selección nueva.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const personaInfo = await poolPersonas.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaJuridicaClienteId)
+            .query(`SELECT [PaisId] FROM [dbo].[Persona] WHERE [Id] = @personaId`);
+
+        if (personaInfo.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el cliente." });
+        }
+
+        const paisIdPersona = personaInfo.recordset[0].PaisId;
+        const pais = Object.values(PAISES_PROVEEDOR_CLIENTE).find(
+            (p) => String(p.id).toUpperCase() === String(paisIdPersona).toUpperCase()
+        );
+        if (!pais) {
+            return res.status(400).json({ Message: "No se pudo determinar el País/Sociedad de este cliente." });
+        }
+
+        // El mismo Código no puede pertenecer a otro proveedor/cliente distinto (CodigoErp es una
+        // tabla compartida entre ambos tipos).
+        const validacion = await poolPersonas.request()
+            .input('codigo', sql.VarChar, codigoTrim)
+            .query(`
+                SELECT TOP 1 [Id], [PersonaJuridicaClienteId]
+                FROM [dbo].[CodigoErp]
+                WHERE [Codigo] = @codigo AND [IsSoftDeleted] = 0
+            `);
+
+        if (validacion.recordset.length > 0) {
+            const existente = validacion.recordset[0];
+            const mismoCliente = existente.PersonaJuridicaClienteId &&
+                String(existente.PersonaJuridicaClienteId).toUpperCase() === String(PersonaJuridicaClienteId).toUpperCase();
+            return res.status(400).json({
+                Message: mismoCliente
+                    ? "Este Código ERP ya está registrado para este cliente."
+                    : "Este Código ERP ya pertenece a otro cliente o proveedor."
+            });
+        }
+
+        const body = {
+            Codigo: codigoTrim,
+            Sociedad: pais.sociedad,
+            Pais: pais.id,
+            PersonaJuridicaClienteId,
+            SistemaId: CODIGO_ERP_CLIENTE_DEFAULTS.SistemaId,
+            SistemaDescripcion: CODIGO_ERP_CLIENTE_DEFAULTS.SistemaDescripcion,
+            GestionDocumento: CODIGO_ERP_CLIENTE_DEFAULTS.GestionDocumento,
+            TipoPersonaDestino: CODIGO_ERP_CLIENTE_DEFAULTS.TipoPersonaDestino,
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErpClienteServiceApi/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErpClienteServiceApi/Create → HTTP ${resp.status} para ${codigoTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErpClienteServiceApi/Create → ${codigoTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Código ERP "${codigoTrim}" (${pais.descripcion})`,
+            referencia: codigoTrim
+        });
+
+        return res.status(200).json({
+            Message: "Código ERP creado con éxito",
+            Data: data,
+            Codigo: codigoTrim,
+            Sociedad: pais.sociedad,
+            Pais: pais.descripcion
+        });
+
+    } catch (error) {
+        console.error("Error en crearCodigoErpCliente:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/modificarCodigoErpCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, Codigo, ModifiedBy } = req.body;
+        const codigoTrim = (Codigo || "").trim();
+
+        if (!Id) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+        if (!codigoTrim) {
+            return res.status(400).json({ Message: "El nuevo Código ERP es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        // El mismo Código no puede pertenecer a otro cliente/proveedor (excluyendo el propio
+        // registro que se está editando, si el usuario no cambió el valor).
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const validacion = await poolPersonas.request()
+            .input('codigo', sql.VarChar, codigoTrim)
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`
+                SELECT TOP 1 [Id]
+                FROM [dbo].[CodigoErp]
+                WHERE [Codigo] = @codigo AND [IsSoftDeleted] = 0 AND [Id] <> @id
+            `);
+        if (validacion.recordset.length > 0) {
+            return res.status(400).json({ Message: "Este Código ERP ya pertenece a otro cliente o proveedor." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/ModificarCodigo", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ModifiedBy, Id, Codigo: codigoTrim })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErp/ModificarCodigo → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErp/ModificarCodigo → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Modificó el Código ERP a "${codigoTrim}"`,
+            referencia: codigoTrim
+        });
+
+        return res.status(200).json({ Message: "Código ERP modificado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en modificarCodigoErpCliente:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/eliminarCodigoErpCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { Id, ModifiedBy } = req.body;
+
+        if (!Id) {
+            return res.status(400).json({ Message: "El Código ERP es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/Delete", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ModifiedBy, Id })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`CodigoErp/Delete → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`CodigoErp/Delete → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: "Eliminó un Código ERP de Cliente",
+            referencia: Id
+        });
+
+        return res.status(200).json({ Message: "Código ERP eliminado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en eliminarCodigoErpCliente:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Catálogo de Ciudades: vive en un tercer servicio externo (seguimientoapi.vesta-accelerate.com,
+// distinto de personasapi/cfows), sin filtro por País en el propio endpoint — trae las ~1000
+// ciudades de todos los países y se filtra aquí por el País seleccionado para el Sitio.
+app.post('/ciudadesPorPais', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PaisKey } = req.body;
+        const pais = PAISES_PROVEEDOR_CLIENTE[PaisKey];
+        if (!pais) {
+            return res.status(400).json({ Message: "Debe seleccionar un País válido." });
+        }
+
+        const resp = await fetch("https://seguimientoapi.vesta-accelerate.com/api/Ciudad/Index");
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Ciudad/Index → HTTP ${resp.status}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        const todas = Array.isArray(data?.Message) ? data.Message : [];
+        const filtradas = todas
+            .filter((c) => String(c.PaisId).toUpperCase() === String(pais.id).toUpperCase())
+            .map((c) => ({ Id: c.Id, Descripcion: c.Descripcion }))
+            .sort((a, b) => a.Descripcion.localeCompare(b.Descripcion));
+
+        return res.json(filtradas);
+
+    } catch (error) {
+        console.error("Error en ciudadesPorPais:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Sitios ya registrados para un cliente puntual (Sitio.Discriminator = 'SitioCliente'), para
+// mostrar la lista y ofrecer "agregar otro" igual que en los demás pasos.
+app.post('/sitiosCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaClienteId } = req.body;
+        if (!PersonaClienteId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaClienteId)
+            .query(`
+                SELECT [Id], [Direccion], [PaisDescripcion], [CiudadDescripcion], [TipoDeSitioDescripcion], [Codigo]
+                FROM [dbo].[Sitio]
+                WHERE [PersonaJuridicaClienteId] = @personaId
+                  AND [Discriminator] = 'SitioCliente'
+                  AND [IsSoftDeleted] = 0
+                ORDER BY [CreatedDate] DESC
+            `);
+
+        return res.json(resultado.recordset);
+
+    } catch (error) {
+        console.error("Error en sitiosCliente:", error);
+        return res.status(500).json({ Message: "Error al validar Sitios del cliente", Error: error.message });
+    }
+});
+
+app.post('/crearSitioCliente', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaClienteId, Direccion, PaisKey, CiudadId, CiudadDescripcion, CoordenadaX, CoordenadaY } = req.body;
+
+        const direccionTrim = (Direccion || "").trim();
+        const ciudadIdTrim = (CiudadId || "").trim();
+        const ciudadDescTrim = (CiudadDescripcion || "").trim();
+        const pais = PAISES_PROVEEDOR_CLIENTE[PaisKey];
+        const coordX = Number(CoordenadaX);
+        const coordY = Number(CoordenadaY);
+
+        if (!PersonaClienteId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+        if (!direccionTrim) {
+            return res.status(400).json({ Message: "La Dirección es requerida." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Debe seleccionar un País válido." });
+        }
+        if (!ciudadIdTrim || !ciudadDescTrim) {
+            return res.status(400).json({ Message: "Debe seleccionar una Ciudad." });
+        }
+        if (!Number.isFinite(coordX) || !Number.isFinite(coordY)) {
+            return res.status(400).json({ Message: "Las Coordenadas deben ser numéricas." });
+        }
+
+        // El Tipo de Sitio no lo elige el usuario: depende del País (regla del negocio). Nicaragua
+        // y Costa Rica todavía no tienen una regla confirmada.
+        const tipoSitio = TIPO_SITIO_POR_PAIS[PaisKey];
+        if (!tipoSitio) {
+            return res.status(400).json({ Message: `El Tipo de Sitio para ${pais.descripcion} todavía no está definido. Contacta a un administrador.` });
+        }
+
+        // El Nombre no lo escribe el usuario: es el mismo con el que el cliente quedó registrado
+        // en Personas. El Código ERP tampoco: se toma del Código ERP ya creado para este cliente
+        // en el mismo País del Sitio (ver /crearCodigoErpCliente, paso previo obligatorio).
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const personaInfo = await poolPersonas.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaClienteId)
+            .query(`SELECT [Nombre] FROM [dbo].[Persona] WHERE [Id] = @personaId`);
+        if (personaInfo.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el cliente." });
+        }
+        const nombrePersona = personaInfo.recordset[0].Nombre;
+
+        const codigoErpInfo = await poolPersonas.request()
+            .input('personaId2', sql.UniqueIdentifier, PersonaClienteId)
+            .input('paisId', sql.VarChar, pais.id)
+            .query(`
+                SELECT TOP 1 [Codigo] FROM [dbo].[CodigoErp]
+                WHERE [PersonaJuridicaClienteId] = @personaId2 AND [Pais] = @paisId AND [IsSoftDeleted] = 0
+                ORDER BY [CreatedDate] DESC
+            `);
+        if (codigoErpInfo.recordset.length === 0) {
+            return res.status(400).json({ Message: `Debe crear primero un Código ERP para ${pais.descripcion} antes de agregar un Sitio en ese País.` });
+        }
+        const codigoErp = codigoErpInfo.recordset[0].Codigo;
+
+        const body = {
+            Nombre: nombrePersona,
+            Direccion: direccionTrim,
+            PaisId: pais.id,
+            PaisDescripcion: pais.descripcion,
+            CiudadId: ciudadIdTrim,
+            CiudadDescripcion: ciudadDescTrim,
+            CoordenadaX: coordX,
+            CoordenadaY: coordY,
+            // El campo real que exige SitioClienteServiceApi/Create es "PersonaJuridicaClienteId"
+            // (confirmado en el swagger; el ejemplo original decía "PersonaClienteId" y la API lo
+            // rechazaba con "PersonaJuridicaClienteId no null, no empty").
+            PersonaJuridicaClienteId: PersonaClienteId,
+            TipoDeSitioId: tipoSitio.id,
+            TipoDeSitioDescripcion: tipoSitio.descripcion,
+            Referencia: generarReferencia(nombrePersona),
+            TipoPersonaDestino: "3",
+            Codigo: codigoErp,
+        };
+
+        const resp = await fetch("https://personasapi.vesta-accelerate.com/api/SitioClienteServiceApi/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`SitioClienteServiceApi/Create → HTTP ${resp.status} para ${nombrePersona}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`SitioClienteServiceApi/Create → ${nombrePersona}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Sitio "${direccionTrim}" (${tipoSitio.descripcion}) para el Cliente "${nombrePersona}"`,
+            referencia: direccionTrim
+        });
+
+        return res.status(200).json({ Message: "Sitio creado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearSitioCliente:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Campos fijos que exige Cliente/Create y no se le piden al usuario. TipoPersonaDestino aquí
+// SÍ viaja dentro del propio Create (a diferencia de Proveedor, que lo asigna en una llamada
+// aparte a SetTipoPersonaDestino porque Proveedor/Create no lo acepta).
+const CLIENTE_CFO_DEFAULTS = {
+    SolicitudEspecieFiscalTipo: 1,
+    TipoPersonaDestino: 3,
+};
+
+// Tenants (bases contables) disponibles para crear el Proveedor/Cliente en CFO. Cada uno es un
+// Tenant real e independiente — verificado contra CfoNetCore.dbo.Tenant (Nombre y SociedadFiscal,
+// que coincide exactamente con el campo "sociedad" de PAISES_PROVEEDOR_CLIENTE: 9095/SV01/GT01/
+// NI01/CR01). OJO: antes este catálogo tenía El Salvador, Guatemala y Nicaragua apuntando los
+// tres al mismo TenantId "174E784C..." (pensando que compartían Tenant); en realidad ese Id es
+// SOLO el de Guatemala ("VESTA LOGISTIC, S.A. (GT)") — El Salvador y Nicaragua tienen cada uno
+// su propio Tenant real, que no estaba en el catálogo. Se corrigió aquí.
 const TENANTS_PROVEEDOR_CFO = {
     honduras: { id: "30D1014C-D443-42EE-8015-005FB0D9FA00", label: "Honduras" },
-    elSalvador: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "El Salvador" },
+    elSalvador: { id: "C7194841-BB94-4903-ADD7-0065CC7AF42C", label: "El Salvador" },
     guatemala: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "Guatemala" },
-    nicaragua: { id: "174E784C-CEDA-4758-A7F5-0063C3454B73", label: "Nicaragua" },
+    nicaragua: { id: "2B45F90A-6691-4829-BA76-0F7B53790453", label: "Nicaragua" },
     costaRica: { id: "13A8389D-9064-4A5B-A156-2235B8A2751A", label: "Costa Rica" },
     corporacionDinant: { id: "8092E57D-03A5-44D3-B271-0F27EBF3D818", label: "Corporación Dinant" },
     dinantExports: { id: "CF884F18-6C35-4703-A48B-21FD0680B2CE", label: "Dinant Exports" },
@@ -2121,6 +2752,13 @@ app.post('/proveedoresCfoPorPersona', requirePermission('cfo', 'crearProveedorCl
             });
         }
 
+        // El Salvador/Guatemala/Nicaragua comparten el mismo TenantId real (una sola fila en la
+        // base), pero se muestran como renglones individuales — uno por cada País que coincide —
+        // en vez de fusionarlos en un solo renglón combinado: así se puede seguir viendo/editando
+        // cada País por separado en pantalla. Lo que si no debe pasar es permitir "crear" de nuevo
+        // para otro País del mismo grupo pensando que es un registro aparte — eso lo evita
+        // /crearProveedorCfo consultando existentesKeys (ver SeccionProveedorCfo), que marca los
+        // 3 como "ya existe" aunque solo haya una fila real detrás.
         const filas = resultado.recordset.flatMap((row) =>
             Object.entries(TENANTS_PROVEEDOR_CFO)
                 .filter(([, t]) => String(t.id).toUpperCase() === String(row.TenantId).toUpperCase())
@@ -2315,6 +2953,136 @@ app.post('/asignarMonedaProveedorCfo', requirePermission('cfo', 'crearProveedorC
 
     } catch (error) {
         console.error("Error en asignarMonedaProveedorCfo:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Tenants en los que un cliente (por PersonaId) ya está creado en CFO. Igual que
+// /proveedoresCfoPorPersona, se consulta directo contra CfoNetCore.dbo.Cliente (no solo lo
+// creado en esta sesión) para avisar si el usuario intenta repetir un Tenant ya existente.
+app.post('/clientesCfoPorPersona', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId } = req.body;
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaId)
+            .query(`
+                SELECT [Id], [TenantId], [Moneda_Value], [MonedaPagoMinimo_Value]
+                FROM [dbo].[Cliente]
+                WHERE [PersonaId] = @personaId AND [IsSoftDeleted] = 0
+            `);
+
+        // Varias claves del catálogo pueden compartir el mismo TenantId real (El Salvador,
+        // Guatemala y Nicaragua usan la misma base contable), pero se muestran como renglones
+        // individuales — uno por País — igual que en /proveedoresCfoPorPersona; lo que se evita
+        // es permitir crear de nuevo para otro País del mismo grupo (ver existentesKeys en
+        // SeccionClienteCfo del frontend, si se agrega esa validación ahí también).
+        const filas = resultado.recordset.flatMap((row) =>
+            Object.entries(TENANTS_PROVEEDOR_CFO)
+                .filter(([, t]) => String(t.id).toUpperCase() === String(row.TenantId).toUpperCase())
+                .map(([key, t]) => ({
+                    Id: row.Id,
+                    TenantKey: key,
+                    Pais: t.label,
+                    MonedaValue: row.Moneda_Value ?? null,
+                    MonedaPagoMinimoValue: row.MonedaPagoMinimo_Value ?? null,
+                }))
+        );
+
+        return res.json(filas);
+
+    } catch (error) {
+        console.error("Error en clientesCfoPorPersona:", error);
+        return res.status(500).json({ Message: "Error al validar Cliente en CFO", Error: error.message });
+    }
+});
+
+app.post('/crearClienteCfo', requirePermission('cfo', 'crearProveedorCliente'), async (req, res) => {
+    try {
+        const { PersonaId, TenantKey, MonedaKey, MonedaPagoMinimoKey, CreatedBy } = req.body;
+        const tenant = TENANTS_PROVEEDOR_CFO[TenantKey];
+        const moneda = MONEDAS_PROVEEDOR_CFO[MonedaKey];
+        const monedaPagoMinimo = MONEDAS_PROVEEDOR_CFO[MonedaPagoMinimoKey];
+
+        if (!PersonaId) {
+            return res.status(400).json({ Message: "El cliente es requerido." });
+        }
+        if (!tenant) {
+            return res.status(400).json({ Message: "Debe seleccionar un País/Tenant válido." });
+        }
+        if (!moneda) {
+            return res.status(400).json({ Message: "Debe seleccionar una Moneda válida." });
+        }
+        if (!monedaPagoMinimo) {
+            return res.status(400).json({ Message: "Debe seleccionar una Moneda de Pago Mínimo válida." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        // El Nombre no se toma de un campo libre del frontend: se extrae de Personas, que es
+        // donde quedó registrado cuando se creó/validó el cliente.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const personaInfo = await poolPersonas.request()
+            .input('personaId', sql.UniqueIdentifier, PersonaId)
+            .query(`SELECT [Nombre] FROM [dbo].[Persona] WHERE [Id] = @personaId`);
+
+        if (personaInfo.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el cliente en Personas." });
+        }
+        const nombre = personaInfo.recordset[0].Nombre;
+
+        const body = {
+            Nombre: nombre,
+            CreatedBy,
+            Moneda: moneda.value,
+            SolicitudEspecieFiscalTipo: CLIENTE_CFO_DEFAULTS.SolicitudEspecieFiscalTipo,
+            PersonaId,
+            TenantId: tenant.id,
+            TipoPersonaDestino: CLIENTE_CFO_DEFAULTS.TipoPersonaDestino,
+            MonedaPagoMinimo: monedaPagoMinimo.value,
+        };
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/Cliente/Create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`Cliente/Create → HTTP ${resp.status} para ${PersonaId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`Cliente/Create → ${PersonaId}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearProveedorCliente",
+            moduloLabel: "Crear Proveedor / Cliente",
+            accion: `Creó el Cliente en CFO "${nombre}" (${tenant.label})`,
+            referencia: nombre
+        });
+
+        return res.status(200).json({ Message: "Cliente creado en CFO con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearClienteCfo:", error);
         return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
     }
 });

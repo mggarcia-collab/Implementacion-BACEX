@@ -362,6 +362,29 @@ export default function AdminUsuarios() {
     }
   };
 
+  const toggleAdmin = async (usuario) => {
+    const nuevoValor = !usuario.isAdmin;
+    if (!nuevoValor && !window.confirm(`¿Quitarle el rol de administrador a ${usuario.nombreCompleto}?`)) {
+      return;
+    }
+    try {
+      const response = await apiFetch(`/auth/usuarios/${usuario.id}/admin`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isAdmin: nuevoValor })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        showToast(data?.Message || "No se pudo actualizar el rol del usuario", "warn");
+        return;
+      }
+      setUsuarios((prev) => prev.map((u) => (u.id === usuario.id ? { ...u, isAdmin: nuevoValor } : u)));
+      showToast(data?.Message || "Actualizado", "ok");
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    }
+  };
+
   const toggleActivo = async (usuario) => {
     try {
       const response = await apiFetch(`/auth/usuarios/${usuario.id}/activo`, {
@@ -483,6 +506,13 @@ export default function AdminUsuarios() {
                         style={{ padding: "6px 12px", fontSize: "12px" }}
                       >
                         {editingPasswordUserId === u.id ? "Cerrar" : "Cambiar contraseña"}
+                      </button>
+                      <button
+                        className="btn ghost"
+                        onClick={() => toggleAdmin(u)}
+                        style={{ padding: "6px 12px", fontSize: "12px" }}
+                      >
+                        {u.isAdmin ? "Quitar administrador" : "Hacer administrador"}
                       </button>
                       <button
                         className={`btn ${u.activo ? "danger" : "primary"}`}

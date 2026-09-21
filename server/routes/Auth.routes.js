@@ -230,6 +230,41 @@ router.put("/usuarios/:id/activo", requireAuth, requireAdmin, (req, res) => {
     return res.json({ Message: activo ? "Usuario activado" : "Usuario desactivado" });
 });
 
+router.put("/usuarios/:id/admin", requireAuth, requireAdmin, (req, res) => {
+    const usuarioId = Number(req.params.id);
+    const { isAdmin } = req.body;
+
+    const usuario = authDb.prepare(`SELECT id, nombre_completo, is_admin FROM usuarios WHERE id = ?`).get(usuarioId);
+    if (!usuario) {
+        return res.status(404).json({ Message: "No se encontró el usuario." });
+    }
+
+    if (!isAdmin) {
+        if (usuarioId === req.user.id) {
+            return res.status(400).json({ Message: "No puedes quitarte el rol de administrador a ti misma." });
+        }
+        const { total } = authDb.prepare(`SELECT COUNT(*) AS total FROM usuarios WHERE is_admin = 1`).get();
+        if (total <= 1) {
+            return res.status(400).json({ Message: "Debe existir al menos un administrador." });
+        }
+    }
+
+    authDb.prepare(`UPDATE usuarios SET is_admin = ? WHERE id = ?`).run(isAdmin ? 1 : 0, usuarioId);
+
+    registrarActividad({
+        usuarioId: req.user.id,
+        usuarioNombre: req.user.nombreCompleto,
+        areaKey: "admin",
+        areaLabel: "Administración",
+        moduloKey: "usuarios",
+        moduloLabel: "Usuarios",
+        accion: isAdmin ? "Otorgó rol de administrador" : "Quitó rol de administrador",
+        referencia: usuario.nombre_completo
+    });
+
+    return res.json({ Message: isAdmin ? "Ahora es administrador" : "Ya no es administrador" });
+});
+
 router.get("/autorizador-actual", requireAuth, (req, res) => {
     const user = authDb.prepare(`SELECT nombre_completo, correo, persona_id FROM usuarios WHERE id = ?`).get(req.user.id);
     if (!user || !user.persona_id) {

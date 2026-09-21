@@ -381,6 +381,848 @@ function SeccionCodigoErp({ persona }) {
   );
 }
 
+// Igual que SeccionCodigoErp, pero para Cliente: mismo flujo (País/Sociedad automáticos según
+// el País con el que se registró en Personas), consumiendo los endpoints .../Cliente. El
+// TipoPersonaDestino (3 = Cliente) es fijo y no se le pide al usuario ni se muestra como número.
+function SeccionCodigoErpCliente({ persona }) {
+  const [codigosErp, setCodigosErp] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [nuevoCodigo, setNuevoCodigo] = useState("");
+  const [creando, setCreando] = useState(false);
+  const [agregarOtro, setAgregarOtro] = useState(null);
+  const [editandoId, setEditandoId] = useState(null);
+  const [valorEdicion, setValorEdicion] = useState("");
+  const [guardandoId, setGuardandoId] = useState(null);
+  const [eliminandoId, setEliminandoId] = useState(null);
+  const autorizadorActual = useAutorizadorActual();
+  const autorizador = autorizadorActual?.id || "";
+  const showToast = useToast();
+
+  const buscarCodigos = async (personaId) => {
+    setCargando(true);
+    setCodigosErp(null);
+    setAgregarOtro(null);
+    try {
+      const resp = await apiFetch(`/codigosErpCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ PersonaJuridicaClienteId: personaId })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al validar Código ERP", "warn");
+        setCodigosErp([]);
+        return;
+      }
+      setCodigosErp(Array.isArray(data) ? data : []);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+      setCodigosErp([]);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    if (persona?.id) buscarCodigos(persona.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persona?.id]);
+
+  const nuevoCodigoTrim = nuevoCodigo.trim();
+  const puedeCrear = nuevoCodigoTrim && !creando;
+
+  const handleCrearCodigo = async () => {
+    if (!puedeCrear) return;
+    if (!window.confirm(
+      `¿Confirma crear el Código ERP "${nuevoCodigoTrim}"?\n\nCliente: ${persona.nombre}\n\nEl País y la Sociedad se toman automáticamente del País con el que se registró el cliente.`
+    )) {
+      return;
+    }
+    setCreando(true);
+    try {
+      const resp = await apiFetch(`/crearCodigoErpCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          PersonaJuridicaClienteId: persona.id,
+          Codigo: nuevoCodigoTrim
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al crear el Código ERP", "warn");
+        return;
+      }
+      showToast(data?.Message || `✓ Código ERP creado con éxito (${data?.Pais || ""} - Sociedad ${data?.Sociedad || ""})`, "ok");
+      setNuevoCodigo("");
+      await buscarCodigos(persona.id);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setCreando(false);
+    }
+  };
+
+  const handleIniciarEdicion = (c) => {
+    setEditandoId(c.Id);
+    setValorEdicion(c.Codigo);
+  };
+
+  const handleCancelarEdicion = () => {
+    setEditandoId(null);
+    setValorEdicion("");
+  };
+
+  const handleGuardarEdicion = async (c) => {
+    if (!autorizador) {
+      showToast("Tu usuario no está habilitado como autorizador", "warn");
+      return;
+    }
+    const nuevoValor = valorEdicion.trim();
+    if (!nuevoValor) {
+      showToast("El Código ERP es requerido", "warn");
+      return;
+    }
+    if (nuevoValor === c.Codigo) {
+      handleCancelarEdicion();
+      return;
+    }
+    if (!window.confirm(`¿Confirma cambiar el Código ERP "${c.Codigo}" a "${nuevoValor}"?`)) {
+      return;
+    }
+    setGuardandoId(c.Id);
+    try {
+      const resp = await apiFetch(`/modificarCodigoErpCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ Id: c.Id, Codigo: nuevoValor, ModifiedBy: autorizador })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al modificar el Código ERP", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Código ERP modificado con éxito", "ok");
+      handleCancelarEdicion();
+      await buscarCodigos(persona.id);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setGuardandoId(null);
+    }
+  };
+
+  const handleEliminar = async (c) => {
+    if (!autorizador) {
+      showToast("Tu usuario no está habilitado como autorizador", "warn");
+      return;
+    }
+    if (!window.confirm(`¿Confirma eliminar el Código ERP "${c.Codigo}" (${c.Pais})? Esta acción no se puede deshacer.`)) {
+      return;
+    }
+    setEliminandoId(c.Id);
+    try {
+      const resp = await apiFetch(`/eliminarCodigoErpCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ Id: c.Id, ModifiedBy: autorizador })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al eliminar el Código ERP", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Código ERP eliminado con éxito", "ok");
+      await buscarCodigos(persona.id);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setEliminandoId(null);
+    }
+  };
+
+  return (
+    <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+      <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1f36", marginBottom: "4px" }}>
+        <PasoBadge n={1} />Código ERP
+      </div>
+      <div style={{ fontSize: "13px", color: "#697386", marginBottom: "14px" }}>
+        Cliente: <strong>{persona.nombre}</strong> (ID Fiscal: {persona.idFiscal})
+      </div>
+
+      <div style={{ marginBottom: "14px" }}>
+        <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#4f5b66", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          Autorizado por
+        </label>
+        <div style={{ padding: "8px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", background: "#fff", color: autorizadorActual ? "#1a1f36" : "#b42318" }}>
+          {autorizadorActual?.name || "Tu usuario no está habilitado como autorizador"}
+        </div>
+      </div>
+
+      {cargando && <div style={{ fontSize: "14px", color: "#697386" }}>Buscando Códigos ERP existentes...</div>}
+
+      {!cargando && codigosErp && codigosErp.length > 0 && (
+        <div className="doc-table-wrap" style={{ marginBottom: "16px", maxHeight: "none" }}>
+          <table className="doc-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Sociedad</th>
+                <th>País</th>
+                <th style={{ textAlign: "right" }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {codigosErp.map((c) => (
+                <tr key={c.Id}>
+                  {editandoId === c.Id ? (
+                    <>
+                      <td>
+                        <input
+                          type="text"
+                          value={valorEdicion}
+                          onChange={(e) => setValorEdicion(e.target.value)}
+                          disabled={guardandoId === c.Id}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px" }}
+                        />
+                      </td>
+                      <td>{c.Sociedad}</td>
+                      <td>{c.Pais}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          className="btn primary"
+                          onClick={() => handleGuardarEdicion(c)}
+                          disabled={guardandoId === c.Id}
+                          style={{ padding: "4px 10px", fontSize: "12px" }}
+                        >
+                          {guardandoId === c.Id ? "Guardando..." : "Guardar"}
+                        </button>
+                        <button
+                          className="btn ghost"
+                          onClick={handleCancelarEdicion}
+                          disabled={guardandoId === c.Id}
+                          style={{ padding: "4px 10px", fontSize: "12px", marginLeft: "6px" }}
+                        >
+                          Cancelar
+                        </button>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td>{c.Codigo}</td>
+                      <td>{c.Sociedad}</td>
+                      <td>{c.Pais}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          className="btn soft"
+                          onClick={() => handleIniciarEdicion(c)}
+                          disabled={eliminandoId === c.Id}
+                          style={{ padding: "4px 10px", fontSize: "12px" }}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          className="btn danger"
+                          onClick={() => handleEliminar(c)}
+                          disabled={eliminandoId === c.Id}
+                          style={{ padding: "4px 10px", fontSize: "12px", marginLeft: "6px" }}
+                        >
+                          {eliminandoId === c.Id ? "Eliminando..." : "Eliminar"}
+                        </button>
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!cargando && codigosErp && codigosErp.length === 0 && (
+        <div style={{ fontSize: "14px", color: "#697386", marginBottom: "16px" }}>
+          Este cliente aún no tiene Códigos ERP registrados.
+        </div>
+      )}
+
+      {!cargando && codigosErp && codigosErp.length > 0 && agregarOtro === null && (
+        <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", background: "#fff", borderRadius: "6px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "14px", color: "#334155" }}>
+            El cliente ya tiene {codigosErp.length > 1 ? "Códigos ERP registrados" : "un Código ERP registrado"}. ¿Deseas agregar otro?
+          </span>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="button" className="btn soft" onClick={() => setAgregarOtro(true)}>Sí</button>
+            <button type="button" className="btn ghost" onClick={() => setAgregarOtro(false)}>No</button>
+          </div>
+        </div>
+      )}
+
+      {!cargando && codigosErp && codigosErp.length > 0 && agregarOtro === false && (
+        <button type="button" className="btn ghost" onClick={() => setAgregarOtro(true)} style={{ marginBottom: "16px" }}>
+          + Agregar otro Código ERP
+        </button>
+      )}
+
+      {!cargando && codigosErp && (codigosErp.length === 0 || agregarOtro === true) && (
+      <>
+      <div className="field" style={{ marginBottom: "8px" }}>
+        <label>Código ERP *</label>
+        <input
+          type="text"
+          placeholder="Ingrese el nuevo Código ERP"
+          value={nuevoCodigo}
+          onChange={(e) => setNuevoCodigo(e.target.value)}
+          disabled={creando}
+          style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+        />
+      </div>
+
+      <div style={{ fontSize: "12px", color: "#a3acb9", marginBottom: "14px" }}>
+        El País y la Sociedad se asignan automáticamente según el País con el que se registró este cliente. Tipo de persona destino: <strong>Cliente</strong>.
+      </div>
+
+      <button type="button" className="btn primary" onClick={handleCrearCodigo} disabled={!puedeCrear}>
+        {creando ? "Creando..." : "Crear Código ERP"}
+      </button>
+      </>
+      )}
+    </div>
+  );
+}
+
+// Mismo catálogo que en el backend (server/routes/Cfo.routes.js → TIPO_SITIO_POR_PAIS). El Tipo
+// de Sitio no lo elige el usuario: depende del País del Sitio (regla del negocio). Nicaragua y
+// Costa Rica todavía no tienen regla definida, así que el Sitio queda bloqueado para esos países
+// hasta que se confirme.
+const TIPO_SITIO_POR_PAIS = {
+  honduras: "Dirección de Casa Matriz",
+  elSalvador: "Dirección de Casa Matriz",
+  guatemala: "Sitio Cliente FEL",
+};
+
+// Segundo paso del Cliente: Sitio (dirección física con Ciudad/Coordenadas). El Nombre, la
+// Referencia y el Código se resuelven automático en el backend (Nombre y Código ERP ya
+// registrados para el cliente); el usuario solo ingresa Dirección, País, Ciudad y Coordenadas.
+// La Ciudad se lista filtrada por el País elegido (servicio externo aparte,
+// seguimientoapi.vesta-accelerate.com, con ~1000 ciudades de todos los países).
+function SeccionSitiosCliente({ persona }) {
+  const [sitios, setSitios] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [agregarOtro, setAgregarOtro] = useState(null);
+  const [direccion, setDireccion] = useState("");
+  const [paisKey, setPaisKey] = useState("");
+  const [ciudades, setCiudades] = useState([]);
+  const [cargandoCiudades, setCargandoCiudades] = useState(false);
+  const [ciudadId, setCiudadId] = useState("");
+  const [coordenadaX, setCoordenadaX] = useState("");
+  const [coordenadaY, setCoordenadaY] = useState("");
+  const [creando, setCreando] = useState(false);
+  const showToast = useToast();
+
+  const tipoSitioLabel = paisKey ? TIPO_SITIO_POR_PAIS[paisKey] : "";
+  const paisSinTipoSitio = paisKey && !tipoSitioLabel;
+
+  const buscarSitios = async (personaId) => {
+    setCargando(true);
+    setSitios(null);
+    setAgregarOtro(null);
+    try {
+      const resp = await apiFetch(`/sitiosCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ PersonaClienteId: personaId })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al validar Sitios del cliente", "warn");
+        setSitios([]);
+        return;
+      }
+      setSitios(Array.isArray(data) ? data : []);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+      setSitios([]);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    if (persona?.id) buscarSitios(persona.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persona?.id]);
+
+  useEffect(() => {
+    setCiudadId("");
+    setCiudades([]);
+    if (!paisKey) return;
+    (async () => {
+      setCargandoCiudades(true);
+      try {
+        const resp = await apiFetch(`/ciudadesPorPais`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ PaisKey: paisKey })
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) {
+          showToast(data?.Message || "Error al cargar Ciudades", "warn");
+          setCiudades([]);
+          return;
+        }
+        setCiudades(Array.isArray(data) ? data : []);
+      } catch (error) {
+        showToast("⚠️ Error de conexión con el servidor", "warn");
+        setCiudades([]);
+      } finally {
+        setCargandoCiudades(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paisKey]);
+
+  const direccionTrim = direccion.trim();
+  const puedeCrear = direccionTrim && paisKey && ciudadId && coordenadaX !== "" && coordenadaY !== "" && tipoSitioLabel && !creando;
+
+  const handleLimpiarForm = () => {
+    setDireccion("");
+    setPaisKey("");
+    setCiudadId("");
+    setCoordenadaX("");
+    setCoordenadaY("");
+  };
+
+  const handleCrear = async () => {
+    if (!puedeCrear) return;
+    const paisLabel = PAISES.find((p) => p.key === paisKey)?.label || paisKey;
+    const ciudadLabel = ciudades.find((c) => c.Id === ciudadId)?.Descripcion || "";
+    if (!window.confirm(
+      `¿Confirma crear este Sitio?\n\nCliente: ${persona.nombre}\nDirección: ${direccionTrim}\nPaís: ${paisLabel}\nCiudad: ${ciudadLabel}\nTipo de Sitio: ${tipoSitioLabel}\n\nEl Nombre y el Código ERP se toman automáticamente.`
+    )) {
+      return;
+    }
+    setCreando(true);
+    try {
+      const resp = await apiFetch(`/crearSitioCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          PersonaClienteId: persona.id,
+          Direccion: direccionTrim,
+          PaisKey: paisKey,
+          CiudadId: ciudadId,
+          CiudadDescripcion: ciudadLabel,
+          CoordenadaX: coordenadaX,
+          CoordenadaY: coordenadaY
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al crear el Sitio", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Sitio creado con éxito", "ok");
+      handleLimpiarForm();
+      await buscarSitios(persona.id);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setCreando(false);
+    }
+  };
+
+  return (
+    <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+      <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1f36", marginBottom: "4px" }}>
+        <PasoBadge n={2} />Sitio del Cliente
+      </div>
+      <div style={{ fontSize: "13px", color: "#697386", marginBottom: "14px" }}>
+        Cliente: <strong>{persona.nombre}</strong> (ID Fiscal: {persona.idFiscal})
+      </div>
+
+      {cargando && <div style={{ fontSize: "14px", color: "#697386" }}>Buscando Sitios existentes...</div>}
+
+      {!cargando && sitios && sitios.length > 0 && (
+        <div className="doc-table-wrap" style={{ marginBottom: "16px", maxHeight: "none" }}>
+          <table className="doc-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>Dirección</th>
+                <th>País</th>
+                <th>Ciudad</th>
+                <th>Tipo de Sitio</th>
+                <th>Código</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sitios.map((s) => (
+                <tr key={s.Id}>
+                  <td>{s.Direccion}</td>
+                  <td>{s.PaisDescripcion}</td>
+                  <td>{s.CiudadDescripcion}</td>
+                  <td>{s.TipoDeSitioDescripcion}</td>
+                  <td>{s.Codigo}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!cargando && sitios && sitios.length === 0 && (
+        <div style={{ fontSize: "14px", color: "#697386", marginBottom: "16px" }}>
+          Este cliente aún no tiene Sitios registrados.
+        </div>
+      )}
+
+      {!cargando && sitios && sitios.length > 0 && agregarOtro === null && (
+        <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", background: "#fff", borderRadius: "6px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "14px", color: "#334155" }}>
+            El cliente ya tiene {sitios.length > 1 ? "Sitios registrados" : "un Sitio registrado"}. ¿Deseas agregar otro?
+          </span>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="button" className="btn soft" onClick={() => setAgregarOtro(true)}>Sí</button>
+            <button type="button" className="btn ghost" onClick={() => setAgregarOtro(false)}>No</button>
+          </div>
+        </div>
+      )}
+
+      {!cargando && sitios && sitios.length > 0 && agregarOtro === false && (
+        <button type="button" className="btn ghost" onClick={() => setAgregarOtro(true)} style={{ marginBottom: "16px" }}>
+          + Agregar otro Sitio
+        </button>
+      )}
+
+      {!cargando && sitios && (sitios.length === 0 || agregarOtro === true) && (
+      <>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
+        <div className="field">
+          <label>Dirección *</label>
+          <input
+            type="text"
+            placeholder="Ingrese la dirección del sitio"
+            value={direccion}
+            onChange={(e) => setDireccion(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+          />
+        </div>
+        <div className="field">
+          <label>País *</label>
+          <select
+            value={paisKey}
+            onChange={(e) => setPaisKey(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+          >
+            <option value="">Seleccione...</option>
+            {PAISES.map((p) => (
+              <option key={p.key} value={p.key}>{p.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
+        <div className="field">
+          <label>Ciudad *</label>
+          <select
+            value={ciudadId}
+            onChange={(e) => setCiudadId(e.target.value)}
+            disabled={creando || !paisKey || cargandoCiudades || paisSinTipoSitio}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+          >
+            <option value="">{cargandoCiudades ? "Cargando..." : !paisKey ? "Seleccione un País primero" : "Seleccione..."}</option>
+            {ciudades.map((c) => (
+              <option key={c.Id} value={c.Id}>{c.Descripcion}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Tipo de Sitio</label>
+          <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff", color: tipoSitioLabel ? "#1a1f36" : "#a3acb9" }}>
+            {tipoSitioLabel || "Se define automáticamente según el País"}
+          </div>
+        </div>
+      </div>
+
+      {paisSinTipoSitio && (
+        <div style={{ padding: "10px 12px", border: "1px solid #fca5a5", background: "#fef2f2", borderRadius: "6px", fontSize: "13px", color: "#991b1b", marginBottom: "14px" }}>
+          Todavía no está definido el Tipo de Sitio para {PAISES.find((p) => p.key === paisKey)?.label}. Por ahora no se puede crear un Sitio en este País.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px" }}>
+        <div className="field">
+          <label>Coordenada X (Latitud) *</label>
+          <input
+            type="number"
+            step="any"
+            placeholder="Ej. 14.592989245902277"
+            value={coordenadaX}
+            onChange={(e) => setCoordenadaX(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+          />
+        </div>
+        <div className="field">
+          <label>Coordenada Y (Longitud) *</label>
+          <input
+            type="number"
+            step="any"
+            placeholder="Ej. -90.56362828617554"
+            value={coordenadaY}
+            onChange={(e) => setCoordenadaY(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+          />
+        </div>
+      </div>
+
+      <div style={{ fontSize: "12px", color: "#a3acb9", marginBottom: "14px" }}>
+        El Nombre y el Código se asignan automáticamente (Nombre del cliente en Personas y Código ERP ya registrado para el País seleccionado).
+      </div>
+
+      <button type="button" className="btn primary" onClick={handleCrear} disabled={!puedeCrear}>
+        {creando ? "Creando..." : "Crear Sitio"}
+      </button>
+      </>
+      )}
+    </div>
+  );
+}
+
+// Tercer paso del Cliente: darlo de alta en CFO (api/Cliente/Create), enlazado al PersonaId ya
+// validado/creado en Personas. Igual que Proveedor en CFO, un mismo cliente puede necesitar
+// existir bajo varios Tenants (Países) a la vez, así que se lista lo que ya existe y se ofrece
+// agregar otro Tenant.
+function SeccionClienteCfo({ persona }) {
+  const [existentes, setExistentes] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [agregarOtro, setAgregarOtro] = useState(null);
+  const [tenantKey, setTenantKey] = useState("");
+  const [monedaKey, setMonedaKey] = useState("");
+  const [monedaPagoMinimoKey, setMonedaPagoMinimoKey] = useState("");
+  const [creando, setCreando] = useState(false);
+  const autorizadorActual = useAutorizadorActual();
+  const autorizador = autorizadorActual?.id || "";
+  const showToast = useToast();
+
+  const buscarExistentes = async (personaId) => {
+    setCargando(true);
+    setExistentes(null);
+    setAgregarOtro(null);
+    try {
+      const resp = await apiFetch(`/clientesCfoPorPersona`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ PersonaId: personaId })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al validar Cliente en CFO", "warn");
+        setExistentes([]);
+        return;
+      }
+      setExistentes(Array.isArray(data) ? data : []);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+      setExistentes([]);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    if (persona?.id) buscarExistentes(persona.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persona?.id]);
+
+  const monedaLabel = (key) => MONEDAS_CFO.find((m) => m.key === key)?.label || key;
+  const tenantLabel = (key) => TENANTS_CFO.find((t) => t.key === key)?.label || key;
+
+  // El Salvador/Guatemala/Nicaragua comparten el mismo Tenant real: si ya existe para uno de
+  // los tres, no se ofrece como opción crearlo "de nuevo" para otro (sería el mismo registro
+  // duplicado en CFO, aunque en pantalla se muestren como Países individuales).
+  const existentesKeys = new Set((existentes || []).map((e) => e.TenantKey));
+  const opcionesTenant = TENANTS_CFO.filter((t) => !existentesKeys.has(t.key));
+
+  const puedeCrear = tenantKey && monedaKey && monedaPagoMinimoKey && !creando;
+
+  const handleLimpiarForm = () => {
+    setTenantKey("");
+    setMonedaKey("");
+    setMonedaPagoMinimoKey("");
+  };
+
+  const handleCrear = async () => {
+    if (!puedeCrear) return;
+    if (!autorizador) {
+      showToast("Tu usuario no está habilitado como autorizador", "warn");
+      return;
+    }
+    if (!window.confirm(
+      `¿Confirma crear el Cliente en CFO?\n\nCliente: ${persona.nombre}\nTenant/País: ${tenantLabel(tenantKey)}\nMoneda: ${monedaLabel(monedaKey)}\nMoneda de Pago Mínimo: ${monedaLabel(monedaPagoMinimoKey)}`
+    )) {
+      return;
+    }
+    setCreando(true);
+    try {
+      const resp = await apiFetch(`/crearClienteCfo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          PersonaId: persona.id,
+          TenantKey: tenantKey,
+          MonedaKey: monedaKey,
+          MonedaPagoMinimoKey: monedaPagoMinimoKey,
+          CreatedBy: autorizador
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al crear el Cliente en CFO", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Cliente creado en CFO con éxito", "ok");
+      handleLimpiarForm();
+      await buscarExistentes(persona.id);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setCreando(false);
+    }
+  };
+
+  return (
+    <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+      <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1f36", marginBottom: "4px" }}>
+        <PasoBadge n={3} />Cliente en CFO
+      </div>
+      <div style={{ fontSize: "13px", color: "#697386", marginBottom: "14px" }}>
+        Cliente: <strong>{persona.nombre}</strong> (ID Fiscal: {persona.idFiscal})
+      </div>
+
+      <div style={{ marginBottom: "14px" }}>
+        <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#4f5b66", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          Autorizado por
+        </label>
+        <div style={{ padding: "8px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", background: "#fff", color: autorizadorActual ? "#1a1f36" : "#b42318" }}>
+          {autorizadorActual?.name || "Tu usuario no está habilitado como autorizador"}
+        </div>
+      </div>
+
+      {cargando && <div style={{ fontSize: "14px", color: "#697386" }}>Buscando Cliente en CFO existente...</div>}
+
+      {!cargando && existentes && existentes.length > 0 && (
+        <div className="doc-table-wrap" style={{ marginBottom: "16px", maxHeight: "none" }}>
+          <table className="doc-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>País / Tenant</th>
+                <th>Moneda</th>
+                <th>Moneda Pago Mínimo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {existentes.map((c) => (
+                <tr key={c.TenantKey}>
+                  <td>{c.Pais}</td>
+                  <td>{MONEDAS_CFO.find((m) => m.value === c.MonedaValue)?.label || c.MonedaValue}</td>
+                  <td>{MONEDAS_CFO.find((m) => m.value === c.MonedaPagoMinimoValue)?.label || c.MonedaPagoMinimoValue}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!cargando && existentes && existentes.length === 0 && (
+        <div style={{ fontSize: "14px", color: "#697386", marginBottom: "16px" }}>
+          Este cliente aún no está creado en CFO.
+        </div>
+      )}
+
+      {!cargando && existentes && existentes.length > 0 && agregarOtro === null && (
+        <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", background: "#fff", borderRadius: "6px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "14px", color: "#334155" }}>
+            El cliente ya está creado en CFO para {existentes.length > 1 ? "estos Tenants" : "este Tenant"}. ¿Deseas agregarlo en otro Tenant?
+          </span>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="button" className="btn soft" onClick={() => setAgregarOtro(true)}>Sí</button>
+            <button type="button" className="btn ghost" onClick={() => setAgregarOtro(false)}>No</button>
+          </div>
+        </div>
+      )}
+
+      {!cargando && existentes && existentes.length > 0 && agregarOtro === false && (
+        <button type="button" className="btn ghost" onClick={() => setAgregarOtro(true)} style={{ marginBottom: "16px" }}>
+          + Agregar en otro Tenant
+        </button>
+      )}
+
+      {!cargando && existentes && agregarOtro === true && opcionesTenant.length === 0 && (
+        <div style={{ padding: "10px 12px", border: "1px solid #fde68a", background: "#fffbeb", borderRadius: "6px", fontSize: "13px", color: "#92400e", marginBottom: "16px" }}>
+          El cliente ya está creado en CFO para todos los Tenants disponibles.
+        </div>
+      )}
+
+      {!cargando && existentes && (existentes.length === 0 || agregarOtro === true) && opcionesTenant.length > 0 && (
+      <>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+        <div className="field">
+          <label>País / Tenant *</label>
+          <select
+            value={tenantKey}
+            onChange={(e) => setTenantKey(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+          >
+            <option value="">Seleccione...</option>
+            {opcionesTenant.map((t) => (
+              <option key={t.key} value={t.key}>{t.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Moneda *</label>
+          <select
+            value={monedaKey}
+            onChange={(e) => setMonedaKey(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+          >
+            <option value="">Seleccione...</option>
+            {MONEDAS_CFO.map((m) => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Moneda de Pago Mínimo *</label>
+          <select
+            value={monedaPagoMinimoKey}
+            onChange={(e) => setMonedaPagoMinimoKey(e.target.value)}
+            disabled={creando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+          >
+            <option value="">Seleccione...</option>
+            {MONEDAS_CFO.map((m) => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <button type="button" className="btn primary" onClick={handleCrear} disabled={!puedeCrear}>
+        {creando ? "Creando..." : "Crear Cliente en CFO"}
+      </button>
+      </>
+      )}
+    </div>
+  );
+}
+
 // Tenants especiales que, para proveedores de Honduras, a veces también hay que dar de alta
 // aparte (el mismo proveedor puede necesitar existir en CFO bajo varios Tenants a la vez).
 const TENANTS_EXTRA_HONDURAS = ["corporacionDinant", "dinantExports"];
@@ -2525,6 +3367,311 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
   );
 }
 
+function FormularioCliente({ personaTrabajo, setPersonaTrabajo, resultado, setResultado }) {
+  const [nombre, setNombre] = useState("");
+  const [idFiscal, setIdFiscal] = useState("");
+  const [paisKey, setPaisKey] = useState("");
+  const [validando, setValidando] = useState(false);
+  const [validacion, setValidacion] = useState(null); // { nombre, idFiscal, existe, matches }
+  // El nombre se busca con LIKE (coincidencia parcial), así que "existe" puede ser un falso
+  // positivo por nombres parecidos de clientes totalmente distintos. Este null/true/false separa
+  // "aún no responde" de "confirmó que ninguno de los mostrados es el que está creando", para
+  // poder seguir adelante igual — el ID Fiscal, que sí es único de verdad, se revalida siempre
+  // en el backend antes de crear.
+  const [ningunoAplica, setNingunoAplica] = useState(null);
+  const [creando, setCreando] = useState(false);
+  const showToast = useToast();
+
+  const nombreTrim = nombre.trim();
+  const idFiscalTrim = idFiscal.trim();
+  const necesitaValidar = !validacion || validacion.nombre !== nombreTrim || validacion.idFiscal !== idFiscalTrim;
+
+  // Si "Cambiar cliente" se dispara desde el padre (junto al selector), aquí se limpian los
+  // campos de búsqueda locales para que la tarjeta de validación vuelva a aparecer en blanco.
+  useEffect(() => {
+    if (!personaTrabajo) {
+      setNombre("");
+      setIdFiscal("");
+      setValidacion(null);
+      setNingunoAplica(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personaTrabajo]);
+
+  const handleValidar = async () => {
+    if (!nombreTrim || !idFiscalTrim) {
+      showToast("El Nombre y el ID Fiscal son obligatorios para validar", "warn");
+      return;
+    }
+    setValidando(true);
+    setResultado(null);
+    setPersonaTrabajo(null);
+    setNingunoAplica(null);
+    try {
+      const resp = await apiFetch(`/personaExistente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tipo: "cliente", nombre: nombreTrim, idFiscal: idFiscalTrim })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al validar en Personas", "warn");
+        return;
+      }
+      const matches = Array.isArray(data) ? data : [];
+      setValidacion({ nombre: nombreTrim, idFiscal: idFiscalTrim, existe: matches.length > 0, matches });
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setValidando(false);
+    }
+  };
+
+  const handleLimpiar = () => {
+    setNombre("");
+    setIdFiscal("");
+    setPaisKey("");
+    setValidacion(null);
+    setNingunoAplica(null);
+    setResultado(null);
+    setPersonaTrabajo(null);
+  };
+
+  // Se puede crear si de verdad no existe ninguna coincidencia, o si existen coincidencias por
+  // nombre parecido pero el usuario confirmó que ninguna es el cliente que está creando.
+  const puedeCrear = !necesitaValidar
+    && (validacion?.existe === false || (validacion?.existe === true && ningunoAplica === true))
+    && nombreTrim && idFiscalTrim && paisKey;
+
+  const handleCrear = async () => {
+    if (!puedeCrear) return;
+    const paisLabel = PAISES.find((p) => p.key === paisKey)?.label || paisKey;
+    if (!window.confirm(
+      `¿Confirma crear el Cliente "${nombreTrim}"?\n\nID Fiscal: ${idFiscalTrim}\nPaís: ${paisLabel}\n\nEl Carácter (2 caracteres) se asignará automáticamente.`
+    )) {
+      return;
+    }
+    setCreando(true);
+    setResultado(null);
+    setPersonaTrabajo(null);
+    try {
+      const resp = await apiFetch(`/crearCliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          Nombre: nombreTrim,
+          IdFiscal: idFiscalTrim,
+          PaisKey: paisKey
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al crear el Cliente", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Cliente creado con éxito", "ok");
+      setResultado({ nombre: nombreTrim, idFiscal: idFiscalTrim, pais: paisLabel, caracter: data?.Caracter });
+      if (data?.PersonaId) {
+        setPersonaTrabajo({ id: data.PersonaId, nombre: nombreTrim, idFiscal: idFiscalTrim });
+      }
+      setNombre("");
+      setIdFiscal("");
+      setPaisKey("");
+      setValidacion(null);
+      setNingunoAplica(null);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setCreando(false);
+    }
+  };
+
+  return (
+    <>
+      {!personaTrabajo && (
+        <>
+          <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "16px" }}>
+              <div className="field">
+                <label>Nombre *</label>
+                <input
+                  type="text"
+                  placeholder="Ingrese nombre del cliente"
+                  value={nombre}
+                  onChange={(e) => { setNombre(e.target.value); setValidacion(null); setNingunoAplica(null); }}
+                  disabled={validando || creando}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+                />
+              </div>
+              <div className="field">
+                <label>ID Fiscal *</label>
+                <input
+                  type="text"
+                  placeholder="Ingrese RTN o NIT"
+                  value={idFiscal}
+                  onChange={(e) => { setIdFiscal(e.target.value); setValidacion(null); setNingunoAplica(null); }}
+                  disabled={validando || creando}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button type="button" className="btn soft" onClick={handleValidar} disabled={validando || creando || !nombreTrim || !idFiscalTrim}>
+                {validando ? "Validando..." : "Validar en Personas"}
+              </button>
+              <button type="button" className="btn ghost" onClick={handleLimpiar} disabled={validando || creando}>
+                Limpiar
+              </button>
+            </div>
+
+            {validacion && (
+              <div style={{ marginTop: "14px" }}>
+                {validacion.existe ? (
+                  <div style={{ padding: "10px 12px", border: "1px solid #fca5a5", background: "#fef2f2", borderRadius: "6px", fontSize: "14px", color: "#991b1b" }}>
+                    <div style={{ fontWeight: "700" }}>⚠️ Ya existen clientes con nombre parecido o el mismo ID Fiscal</div>
+                    <div style={{ fontWeight: "400", marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {validacion.matches.map((m) => (
+                        <div key={m.Id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", background: "#fff", border: "1px solid #fecaca", borderRadius: "6px", padding: "8px 10px" }}>
+                          <span>{m.Nombre} (ID Fiscal: {m.IdFiscal})</span>
+                          <button
+                            type="button"
+                            className="btn soft"
+                            onClick={() => setPersonaTrabajo({ id: m.Id, nombre: m.Nombre, idFiscal: m.IdFiscal })}
+                          >
+                            Usar este cliente
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {ningunoAplica === null && (
+                      <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #fecaca", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                        <span style={{ color: "#7f1d1d" }}>Cliente no aplica a los anteriores. ¿Deseas crear uno nuevo de todas formas?</span>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button type="button" className="btn soft" onClick={() => setNingunoAplica(true)}>Sí</button>
+                          <button type="button" className="btn ghost" onClick={() => setNingunoAplica(false)}>No</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {ningunoAplica === true && (
+                      <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #fecaca", fontWeight: "600", color: "#166534" }}>
+                        ✓ Ninguno de los anteriores aplica — puedes continuar creando un cliente nuevo. El ID Fiscal se revalida igual antes de crear.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ padding: "10px 12px", border: "1px solid #86efac", background: "#f0fdf4", borderRadius: "6px", fontSize: "14px", color: "#166534", fontWeight: "700" }}>
+                    ✓ No existe — se puede crear
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {(validacion?.existe === false || (validacion?.existe === true && ningunoAplica === true)) && !necesitaValidar && (
+            <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "16px" }}>
+                <div className="field">
+                  <label>País *</label>
+                  <select
+                    value={paisKey}
+                    onChange={(e) => setPaisKey(e.target.value)}
+                    disabled={creando}
+                    style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+                  >
+                    <option value="">Seleccione...</option>
+                    {PAISES.map((p) => (
+                      <option key={p.key} value={p.key}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ fontSize: "12px", color: "#a3acb9", marginBottom: "14px" }}>
+                Razón Social: <strong>{nombreTrim || "—"}</strong> · El Carácter (2 caracteres, único) se asigna automáticamente al crear.
+              </div>
+
+              <button type="button" className="btn primary" onClick={handleCrear} disabled={!puedeCrear || creando}>
+                {creando ? "Creando..." : "Crear Cliente"}
+              </button>
+            </div>
+          )}
+
+          {resultado && (
+            <div style={{ border: "1px solid #d1fae5", background: "#f0fdf9", borderRadius: "8px", padding: "20px", marginBottom: "20px" }}>
+              <div style={{ fontSize: "15px", fontWeight: "700", color: "#065f46", marginBottom: "10px" }}>
+                ✓ Cliente creado
+              </div>
+              <div className="doc-table-wrap" style={{ border: "none", boxShadow: "none", borderRadius: 0, maxHeight: "none" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <tbody>
+                  <tr>
+                    <td style={{ fontWeight: "600", color: "#334155", width: "180px" }}>Nombre</td>
+                    <td>{resultado.nombre}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: "600", color: "#334155" }}>ID Fiscal</td>
+                    <td>{resultado.idFiscal}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: "600", color: "#334155" }}>País</td>
+                    <td>{resultado.pais}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: "600", color: "#334155" }}>Carácter</td>
+                    <td>{resultado.caracter}</td>
+                  </tr>
+                </tbody>
+              </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {personaTrabajo && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {resultado && (
+            <div style={{ border: "1px solid #d1fae5", background: "#f0fdf9", borderRadius: "8px", padding: "20px" }}>
+              <div style={{ fontSize: "15px", fontWeight: "700", color: "#065f46", marginBottom: "10px" }}>
+                ✓ Cliente creado
+              </div>
+              <div className="doc-table-wrap" style={{ border: "none", boxShadow: "none", borderRadius: 0, maxHeight: "none" }}>
+                <table className="doc-table" style={{ width: "100%" }}>
+                  <tbody>
+                    <tr>
+                      <td style={{ fontWeight: "600", color: "#334155", width: "180px" }}>Nombre</td>
+                      <td>{resultado.nombre}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: "600", color: "#334155" }}>ID Fiscal</td>
+                      <td>{resultado.idFiscal}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: "600", color: "#334155" }}>País</td>
+                      <td>{resultado.pais}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: "600", color: "#334155" }}>Carácter (autogenerado)</td>
+                      <td>{resultado.caracter}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <SeccionCodigoErpCliente persona={personaTrabajo} />
+          <SeccionSitiosCliente persona={personaTrabajo} />
+          <SeccionClienteCfo persona={personaTrabajo} />
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function CrearProveedorCliente() {
   const [tipo, setTipo] = useState("");
   // Viven aquí (no dentro de FormularioProveedor) para poder mostrar la barra "Proveedor: ...
@@ -2574,6 +3721,19 @@ export default function CrearProveedorCliente() {
             </button>
           </div>
         )}
+
+        {tipo === "cliente" && personaTrabajo && (
+          <div style={{ background: "#f0fdf9", padding: "14px 20px", borderRadius: "8px", border: "1px solid #d1fae5", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ fontSize: "14px", color: "#065f46" }}>
+              {resultado ? "✓ Cliente creado — " : "Cliente: "}
+              <strong>{personaTrabajo.nombre}</strong> (ID Fiscal: {personaTrabajo.idFiscal}
+              {resultado?.caracter ? `, Carácter: ${resultado.caracter}` : ""})
+            </div>
+            <button type="button" className="btn ghost" onClick={() => { setPersonaTrabajo(null); setResultado(null); }}>
+              Cambiar cliente
+            </button>
+          </div>
+        )}
       </div>
 
       {tipo === "proveedor" && (
@@ -2586,9 +3746,12 @@ export default function CrearProveedorCliente() {
       )}
 
       {tipo === "cliente" && (
-        <div style={{ border: "1px dashed #cbd5e1", borderRadius: "8px", padding: "20px", color: "#697386", fontSize: "14px" }}>
-          Formulario de Cliente pendiente de definir (campos y endpoint de creación).
-        </div>
+        <FormularioCliente
+          personaTrabajo={personaTrabajo}
+          setPersonaTrabajo={setPersonaTrabajo}
+          resultado={resultado}
+          setResultado={setResultado}
+        />
       )}
     </div>
   );

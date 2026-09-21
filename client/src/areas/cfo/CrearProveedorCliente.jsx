@@ -3056,6 +3056,12 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
   const [presentoComprobante, setPresentoComprobante] = useState("");
   const [validando, setValidando] = useState(false);
   const [validacion, setValidacion] = useState(null); // { nombre, idFiscal, existe, matches }
+  // El nombre se busca con LIKE (coincidencia parcial), así que "existe" puede ser un falso
+  // positivo por nombres parecidos de proveedores totalmente distintos. Este null/true/false
+  // separa "aún no responde" de "confirmó que ninguno de los mostrados es el que está creando",
+  // para poder seguir adelante igual — el ID Fiscal, que sí es único de verdad, se revalida
+  // siempre en el backend antes de crear.
+  const [ningunoAplica, setNingunoAplica] = useState(null);
   const [creando, setCreando] = useState(false);
   // Registros del Proveedor en CFO (uno por Tenant): se cargan aquí, no dentro de cada sección,
   // para que "Proveedor en CFO" y "Oficiales de Pago" siempre vean los mismos datos.
@@ -3074,6 +3080,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
       setNombre("");
       setIdFiscal("");
       setValidacion(null);
+      setNingunoAplica(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personaTrabajo]);
@@ -3115,6 +3122,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
     setValidando(true);
     setResultado(null);
     setPersonaTrabajo(null);
+    setNingunoAplica(null);
     try {
       const resp = await apiFetch(`/personaExistente`, {
         method: "POST",
@@ -3141,11 +3149,16 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
     setPaisKey("");
     setPresentoComprobante("");
     setValidacion(null);
+    setNingunoAplica(null);
     setResultado(null);
     setPersonaTrabajo(null);
   };
 
-  const puedeCrear = !necesitaValidar && validacion?.existe === false && nombreTrim && idFiscalTrim && paisKey && presentoComprobante !== "";
+  // Se puede crear si de verdad no existe ninguna coincidencia, o si existen coincidencias por
+  // nombre parecido pero el usuario confirmó que ninguna es el proveedor que está creando.
+  const puedeCrear = !necesitaValidar
+    && (validacion?.existe === false || (validacion?.existe === true && ningunoAplica === true))
+    && nombreTrim && idFiscalTrim && paisKey && presentoComprobante !== "";
 
   const handleCrear = async () => {
     if (!puedeCrear) return;
@@ -3184,6 +3197,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
       setPaisKey("");
       setPresentoComprobante("");
       setValidacion(null);
+      setNingunoAplica(null);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
@@ -3203,7 +3217,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
                   type="text"
                   placeholder="Ingrese nombre del proveedor"
                   value={nombre}
-                  onChange={(e) => { setNombre(e.target.value); setValidacion(null); }}
+                  onChange={(e) => { setNombre(e.target.value); setValidacion(null); setNingunoAplica(null); }}
                   disabled={validando || creando}
                   style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
                 />
@@ -3214,7 +3228,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
                   type="text"
                   placeholder="Ingrese RTN o NIT"
                   value={idFiscal}
-                  onChange={(e) => { setIdFiscal(e.target.value); setValidacion(null); }}
+                  onChange={(e) => { setIdFiscal(e.target.value); setValidacion(null); setNingunoAplica(null); }}
                   disabled={validando || creando}
                   style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
                 />
@@ -3234,7 +3248,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
               <div style={{ marginTop: "14px" }}>
                 {validacion.existe ? (
                   <div style={{ padding: "10px 12px", border: "1px solid #fca5a5", background: "#fef2f2", borderRadius: "6px", fontSize: "14px", color: "#991b1b" }}>
-                    <div style={{ fontWeight: "700" }}>⚠️ Proveedor ya existe</div>
+                    <div style={{ fontWeight: "700" }}>⚠️ Ya existen proveedores con nombre parecido o el mismo ID Fiscal</div>
                     <div style={{ fontWeight: "400", marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
                       {validacion.matches.map((m) => (
                         <div key={m.Id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", background: "#fff", border: "1px solid #fecaca", borderRadius: "6px", padding: "8px 10px" }}>
@@ -3249,6 +3263,22 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
                         </div>
                       ))}
                     </div>
+
+                    {ningunoAplica === null && (
+                      <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #fecaca", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                        <span style={{ color: "#7f1d1d" }}>Proveedor no aplica a los anteriores. ¿Deseas crear uno nuevo de todas formas?</span>
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button type="button" className="btn soft" onClick={() => setNingunoAplica(true)}>Sí</button>
+                          <button type="button" className="btn ghost" onClick={() => setNingunoAplica(false)}>No</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {ningunoAplica === true && (
+                      <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid #fecaca", fontWeight: "600", color: "#166534" }}>
+                        ✓ Ninguno de los anteriores aplica — puedes continuar creando un proveedor nuevo. El ID Fiscal se revalida igual antes de crear.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ padding: "10px 12px", border: "1px solid #86efac", background: "#f0fdf4", borderRadius: "6px", fontSize: "14px", color: "#166534", fontWeight: "700" }}>
@@ -3259,7 +3289,7 @@ function FormularioProveedor({ personaTrabajo, setPersonaTrabajo, resultado, set
             )}
           </div>
 
-          {validacion?.existe === false && !necesitaValidar && (
+          {(validacion?.existe === false || (validacion?.existe === true && ningunoAplica === true)) && !necesitaValidar && (
             <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "16px" }}>
                 <div className="field">

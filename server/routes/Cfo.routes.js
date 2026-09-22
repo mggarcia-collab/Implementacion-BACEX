@@ -2,7 +2,7 @@ import { Router } from "express";
 import { conexion, BasesDeDatos } from '../database/database.js'
 import sql from 'mssql'
 import { requireAuth, requirePermission } from '../middleware/auth.js'
-import { registrarActividad } from '../database/authDb.js'
+import { registrarActividad, authDb } from '../database/authDb.js'
 
 const app = Router();
 app.use(requireAuth);
@@ -14,6 +14,42 @@ function mensajeDeAzure(data) {
     if (!data) return null;
     if (Array.isArray(data.Message)) return data.Message.length ? data.Message.join(' ') : null;
     return data.Message || null;
+}
+
+// RegistroContable.ModifiedBy (CfoNetCore) guarda el mismo Id de Persona que usuarios.persona_id
+// (auth.db) — el mismo que se manda como UsuarioId/CreatedBy/ModifiedBy al crear/anular cosas
+// desde esta app. Sirve para poder mostrar "quién" hizo algo (ej. quién anuló una factura) a
+// partir de ese Id, sin tener que exponer el GUID crudo en pantalla. Si el Id no pertenece a
+// ningún usuario de esta app (lo modificó alguien desde el sistema CFO directamente, por fuera
+// de esta herramienta), se busca como segundo intento en CfoNetCore.dbo.Operador (la misma
+// tabla de operadores/colaboradores que ya usa /buscarOperador) antes de darse por vencido.
+async function resolverNombresPorPersonaId(ids, poolCfo) {
+    const idsUnicos = [...new Set(ids.filter(Boolean).map((id) => String(id).toUpperCase()))]
+        .filter((id) => id !== "00000000-0000-0000-0000-000000000000");
+    if (idsUnicos.length === 0) return {};
+
+    const mapa = {};
+    const placeholders = idsUnicos.map(() => "?").join(", ");
+    const filasUsuarios = authDb.prepare(`SELECT persona_id, nombre_completo FROM usuarios WHERE UPPER(persona_id) IN (${placeholders})`).all(...idsUnicos);
+    for (const fila of filasUsuarios) {
+        mapa[String(fila.persona_id).toUpperCase()] = fila.nombre_completo;
+    }
+
+    const faltantes = idsUnicos.filter((id) => !mapa[id]);
+    if (faltantes.length > 0 && poolCfo) {
+        const request = poolCfo.request();
+        const parametros = faltantes.map((id, i) => {
+            const nombre = `op${i}`;
+            request.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
+        });
+        const resultado = await request.query(`SELECT Id, Nombre FROM [dbo].[Operador] WHERE Id IN (${parametros.join(", ")})`);
+        for (const fila of resultado.recordset) {
+            mapa[String(fila.Id).toUpperCase()] = fila.Nombre;
+        }
+    }
+
+    return mapa;
 }
 
 // Único requisito para poder redondear: que el documento tenga un monto numérico válido.
@@ -180,22 +216,24 @@ app.post('/getCliente', requirePermission('cfo', 'salesorder'), async (req, res)
 
 app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (req, res) => {
     try {
-        const { referencia, referencias, codigoErp } = req.body;
-        const listaReferencias = Array.isArray(referencias)
-            ? referencias.map((r) => String(r).trim()).filter(Boolean)
-            : (referencia ? [String(referencia).trim()] : []);
+        const { referencia, referencias, sp, sps, documentoFiscal, documentosFiscales, documentoSap, documentosSap, codigoErp } = req.body;
+        const listaReferencias = normalizarLista(referencias, referencia);
+        const listaSps = normalizarLista(sps, sp);
+        const listaFiscales = normalizarLista(documentosFiscales, documentoFiscal);
+        const listaSap = normalizarLista(documentosSap, documentoSap);
 
-        if (listaReferencias.length === 0) {
-            return res.status(400).json({ Message: "La referencia operativa es requerida." });
+        if (listaReferencias.length === 0 && listaSps.length === 0 && listaFiscales.length === 0 && listaSap.length === 0) {
+            return res.status(400).json({ Message: "Ingrese al menos un criterio de búsqueda: Referencia Operativa, SP, Número de Documento Fiscal o Número de Documento SAP." });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();
-        const parametros = listaReferencias.map((valor, i) => {
-            const nombre = `ref${i}`;
-            request.input(nombre, sql.VarChar, valor);
-            return `@${nombre}`;
-        });
+        const condiciones = condicionesIdentificadoresDocumento(request, {
+            referencias: listaReferencias,
+            sps: listaSps,
+            documentosFiscales: listaFiscales,
+            documentosSap: listaSap
+        }, "doc");
         // Opcional: filtra a solo los documentos cuyo material tenga este Código ERP
         // (MaterialTenant.CodigoErpReembolso). Si no se manda, se comporta igual que antes.
         request.input('codigoErp', sql.VarChar, codigoErp ? String(codigoErp).trim() : null);
@@ -223,6 +261,8 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
                     END AS [Estado de documento],
                     d.CreatedDate AS Fecha
                 FROM Documento d
+                LEFT JOIN SolicitudDePago AS sp ON (d.Id = sp.Id)
+                LEFT JOIN RegistroContable rc ON (d.RegistroContableId = rc.Id)
                 LEFT JOIN Cliente c ON d.ClienteId = c.Id
                 LEFT JOIN Proveedor pr ON d.ProveedorId = pr.Id
                 OUTER APPLY (
@@ -234,7 +274,7 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
                       AND (@codigoErp IS NULL OR MT2.CodigoErpReembolso = @codigoErp)
                     ORDER BY MP2.Descripcion ASC
                 ) MP
-                WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+                WHERE (${condiciones.join(" OR ")})
                   AND d.IsSoftDeleted = 0
                   AND (@codigoErp IS NULL OR EXISTS (
                       SELECT 1 FROM dbo.DocumentoDetalle DD3
@@ -254,34 +294,38 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
 });
 
 // Lista de Códigos ERP disponibles para llenar el desplegable de filtro: solo los que
-// realmente están ligados a algún documento de la(s) Referencia(s) Operativa(s) ingresada(s)
-// (mismo filtro base que documentosPorReferencia, sin el filtro de codigoErp).
+// realmente están ligados a algún documento que coincida con el criterio actual (mismo filtro
+// base que documentosPorReferencia, sin el filtro de codigoErp).
 app.post('/codigosErpPorReferencia', requirePermission('cfo', 'habDoc'), async (req, res) => {
     try {
-        const { referencia, referencias } = req.body;
-        const listaReferencias = Array.isArray(referencias)
-            ? referencias.map((r) => String(r).trim()).filter(Boolean)
-            : (referencia ? [String(referencia).trim()] : []);
+        const { referencia, referencias, sp, sps, documentoFiscal, documentosFiscales, documentoSap, documentosSap } = req.body;
+        const listaReferencias = normalizarLista(referencias, referencia);
+        const listaSps = normalizarLista(sps, sp);
+        const listaFiscales = normalizarLista(documentosFiscales, documentoFiscal);
+        const listaSap = normalizarLista(documentosSap, documentoSap);
 
-        if (listaReferencias.length === 0) {
+        if (listaReferencias.length === 0 && listaSps.length === 0 && listaFiscales.length === 0 && listaSap.length === 0) {
             return res.json([]);
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();
-        const parametros = listaReferencias.map((valor, i) => {
-            const nombre = `ref${i}`;
-            request.input(nombre, sql.VarChar, valor);
-            return `@${nombre}`;
-        });
+        const condiciones = condicionesIdentificadoresDocumento(request, {
+            referencias: listaReferencias,
+            sps: listaSps,
+            documentosFiscales: listaFiscales,
+            documentosSap: listaSap
+        }, "erp");
 
         const resultado = await request.query(`
             SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
             FROM Documento d
+            LEFT JOIN SolicitudDePago AS sp ON (d.Id = sp.Id)
+            LEFT JOIN RegistroContable rc ON (d.RegistroContableId = rc.Id)
             JOIN dbo.DocumentoDetalle DD ON DD.DocumentoId = d.Id
             JOIN dbo.MaterialProveedor MP ON MP.Id = DD.MaterialProveedorId
             JOIN dbo.MaterialTenant MT ON MT.Id = MP.MaterialTenantId
-            WHERE d.ReferenciaOperativa IN (${parametros.join(", ")})
+            WHERE (${condiciones.join(" OR ")})
               AND d.IsSoftDeleted = 0
               AND MT.CodigoErpReembolso IS NOT NULL
             ORDER BY MT.CodigoErpReembolso ASC
@@ -1238,13 +1282,13 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
         });
 
         const resultado = await request.query(`
-            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.SalesOrder SO
             LEFT JOIN dbo.RegistroContable RC ON RC.Id = SO.RegistroContableId
             WHERE REPLACE(SO.ReferenciaOperativa, '-', '') IN (${parametrosSinGuion.join(", ")})
               AND SO.Status_Value = 3
 
-            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.Documento D
             LEFT JOIN dbo.RegistroContable RC ON RC.Id = D.RegistroContableFacturaId
             WHERE D.ReferenciaOperativa IN (${parametrosResueltos.join(", ")})
@@ -1255,21 +1299,29 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             -- desaparecería de los resultados. Esta consulta aparte la vuelve a traer,
             -- buscando directamente RegistroContable ya anulados (IsSoftDeleted = 1) para
             -- la misma referencia, sin importar el estado actual del SalesOrder/Documento.
-            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.SalesOrder SO
             INNER JOIN dbo.RegistroContable RC ON RC.Id = SO.RegistroContableId
             WHERE REPLACE(SO.ReferenciaOperativa, '-', '') IN (${parametrosSinGuion.join(", ")})
               AND RC.IsSoftDeleted = 1
 
-            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.Documento D
             INNER JOIN dbo.RegistroContable RC ON RC.Id = D.RegistroContableFacturaId
             WHERE D.ReferenciaOperativa IN (${parametrosResueltos.join(", ")})
               AND RC.IsSoftDeleted = 1
         `);
 
-        const facturas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || []), ...(resultado.recordsets[3] || [])]
-            .map((f) => ({ ...f, Estado: f.IsSoftDeleted ? "Anulada" : "Habilitada" }));
+        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || []), ...(resultado.recordsets[3] || [])];
+        const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
+        const facturas = crudas.map((f) => ({
+            Tipo: f.Tipo,
+            ReferenciaOperativa: f.ReferenciaOperativa,
+            NumeroFacturaSap: f.NumeroFacturaSap,
+            Estado: f.IsSoftDeleted ? "Anulada" : "Habilitada",
+            AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
+            AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
+        }));
         return res.json(facturas);
 
     } catch (error) {
@@ -1303,19 +1355,27 @@ app.post('/facturasPorNumero', requirePermission('cfo', 'anulacionFacturas'), as
         });
 
         const resultado = await request.query(`
-            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.SalesOrder SO
             INNER JOIN dbo.RegistroContable RC ON RC.Id = SO.RegistroContableId
             WHERE RC.NumeroFacturaSap IN (${parametros.join(", ")})
 
-            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted
+            SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.Documento D
             INNER JOIN dbo.RegistroContable RC ON RC.Id = D.RegistroContableFacturaId
             WHERE RC.NumeroFacturaSap IN (${parametros.join(", ")})
         `);
 
-        const resultados = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || [])]
-            .map((f) => ({ ...f, Estado: f.IsSoftDeleted ? "Anulada" : "Habilitada" }));
+        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || [])];
+        const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
+        const resultados = crudas.map((f) => ({
+            Tipo: f.Tipo,
+            ReferenciaOperativa: f.ReferenciaOperativa,
+            NumeroFacturaSap: f.NumeroFacturaSap,
+            Estado: f.IsSoftDeleted ? "Anulada" : "Habilitada",
+            AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
+            AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
+        }));
         return res.json(resultados);
 
     } catch (error) {
@@ -1514,6 +1574,108 @@ const ADUANAS_CUADRILLA = {
 
 app.get('/aduanasCuadrilla', requirePermission('cfo', 'cuadrilla'), (req, res) => {
     res.json(Object.entries(ADUANAS_CUADRILLA).map(([key, a]) => ({ key, label: a.label })));
+});
+
+// Mismos códigos de Moneda usados en el resto del sistema, con etiqueta completa para
+// mostrar en pantalla (a diferencia del MONEDAS corto de /cuadrillaPorReferencia).
+const MONEDAS_CUADRILLA_DISPLAY = { 340: "Lempiras (HNL)", 840: "Dólares (USD)" };
+function monedaCuadrillaLabel(value) {
+    return MONEDAS_CUADRILLA_DISPLAY[value] || (value != null ? String(value) : "—");
+}
+
+// Documento(s) Provisional(es) de Cuadrilla ya creados para una Referencia Operativa.
+// "1006" es el Código ERP (CodigoErpReembolso) del material "Cuadrilla" — confirmado contra
+// datos reales (Honduras y Corporación Dinant usan el mismo código para este material) — se
+// usa para no mezclar el Documento Provisional de Cuadrilla con otros Documentos no
+// relacionados que pueda tener la misma referencia.
+app.post('/documentosProvisionalesCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, res) => {
+    try {
+        const { referencia } = req.body;
+        if (!referencia) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('referencia', sql.VarChar, referencia)
+            .query(`
+                SELECT
+                    d.Id,
+                    pr.Nombre AS Proveedor,
+                    c.Nombre AS Cliente,
+                    d.Discriminator AS Tipo_Documento,
+                    d.ReferenciaOperativa AS Referencia_Operativa,
+                    d.TotalMonto AS Monto_Documento,
+                    dd.PrecioVenta,
+                    d.Moneda_Value,
+                    MP.Descripcion AS MaterialProveedor,
+                    MT.CodigoErpReembolso,
+                    d.CreatedDate
+                FROM Documento d
+                LEFT JOIN Cliente c ON d.ClienteId = c.Id
+                LEFT JOIN Proveedor pr ON d.ProveedorId = pr.Id
+                LEFT JOIN dbo.DocumentoDetalle dd ON dd.DocumentoId = d.Id
+                LEFT JOIN dbo.MaterialProveedor MP ON MP.Id = dd.MaterialProveedorId
+                LEFT JOIN MaterialTenant MT ON MP.MaterialTenantId = MT.Id
+                WHERE d.ReferenciaOperativa = @referencia
+                  AND d.IsSoftDeleted = 0
+                  AND MT.CodigoErpReembolso = '1006'
+                ORDER BY d.CreatedDate DESC
+            `);
+
+        return res.json(resultado.recordset.map((f) => ({ ...f, MonedaLabel: monedaCuadrillaLabel(f.Moneda_Value) })));
+
+    } catch (error) {
+        console.error("Error en documentosProvisionalesCuadrilla:", error);
+        return res.status(500).json({ Message: "Error al obtener Documentos Provisionales de Cuadrilla", Error: error.message });
+    }
+});
+
+// Línea(s) de Material de Cuadrilla ya creadas para una Referencia Operativa. Se filtra por el
+// mismo MaterialVariableSegmentoId que ya resuelve /cuadrillaPorReferencia (el material
+// "Cuadrilla" de esa negociación) para no mezclarlo con otras Líneas de Material no
+// relacionadas que pueda tener el mismo SalesOrder.
+app.post('/lineasMaterialCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, res) => {
+    try {
+        const { referencia, materialVariableSegmentoId } = req.body;
+        if (!referencia) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        if (!materialVariableSegmentoId) {
+            return res.status(400).json({ Message: "Falta el MaterialVariableSegmentoId (vuelva a buscar la Referencia Operativa)." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('referencia', sql.VarChar, referencia)
+            .input('segmentoId', sql.UniqueIdentifier, materialVariableSegmentoId)
+            .query(`
+                SELECT
+                    S.ReferenciaOperativa,
+                    LV.Id AS LineaMaterialId,
+                    LV.Descripcion AS MaterialDescripcion,
+                    LV.MaterialErp,
+                    LV.Valor,
+                    LV.Costo,
+                    LV.Currency_Value,
+                    LV.CreatedDate
+                FROM [dbo].[SalesOrder] S
+                LEFT JOIN SalesOrderDetalle SD ON SD.SalesOrderId = S.Id
+                LEFT JOIN LineaMaterialVariable LV ON LV.SalesOrderDetalleId = SD.Id
+                LEFT JOIN MaterialVariableValor MVV ON MVV.Id = LV.MaterialVariableValorId
+                WHERE S.ReferenciaOperativa = @referencia
+                  AND S.IsSoftDeleted = 0
+                  AND LV.IsSoftDeleted = 0
+                  AND MVV.MaterialVariableSegmentoId = @segmentoId
+                ORDER BY LV.CreatedDate DESC
+            `);
+
+        return res.json(resultado.recordset.map((f) => ({ ...f, MonedaLabel: monedaCuadrillaLabel(f.Currency_Value) })));
+
+    } catch (error) {
+        console.error("Error en lineasMaterialCuadrilla:", error);
+        return res.status(500).json({ Message: "Error al obtener Líneas de Material de Cuadrilla", Error: error.message });
+    }
 });
 
 app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, res) => {

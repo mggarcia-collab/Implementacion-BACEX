@@ -27,6 +27,16 @@ function Badge({ text, style }) {
   );
 }
 
+const formatoFechaAnulacion = new Intl.DateTimeFormat("es-HN", {
+  day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"
+});
+
+function formatearFechaAnulacion(fecha) {
+  if (!fecha) return "";
+  const d = new Date(fecha);
+  return isNaN(d) ? "" : formatoFechaAnulacion.format(d);
+}
+
 // Las facturas de este sistema siempre tienen 10 dígitos. Si viene más corta (típico
 // al copiar desde Excel, que quita los ceros a la izquierda), se puede corregir
 // rellenando con ceros; si no es numérica o tiene más de 10 dígitos, no se puede
@@ -177,12 +187,14 @@ export default function AnulacionFacturas() {
     referencia: f.ReferenciaOperativa || "",
     tipo: f.Tipo || "",
     factura: f.NumeroFacturaSap || "",
-    estado: f.Estado || ""
+    estado: f.Estado || "",
+    anuladoPor: f.Estado === "Anulada" ? (f.AnuladoPor || "Usuario no identificado") : "",
+    anuladoFecha: f.Estado === "Anulada" ? formatearFechaAnulacion(f.AnuladoFecha) : ""
   }));
 
   const handleCopiarResumen = async () => {
-    const encabezado = "Referencia Operativa\tTipo\tN° Factura SAP\tEstado";
-    const filas = filasResumen().map((f) => `${f.referencia}\t${f.tipo}\t${f.factura}\t${f.estado}`);
+    const encabezado = "Referencia Operativa\tTipo\tN° Factura SAP\tEstado\tAnulado por\tFecha de anulación";
+    const filas = filasResumen().map((f) => `${f.referencia}\t${f.tipo}\t${f.factura}\t${f.estado}\t${f.anuladoPor}\t${f.anuladoFecha}`);
     const texto = [encabezado, ...filas].join("\n");
     try {
       await navigator.clipboard.writeText(texto);
@@ -194,8 +206,8 @@ export default function AnulacionFacturas() {
 
   const handleDescargarResumen = () => {
     const escapar = (valor) => `"${String(valor).replace(/"/g, '""')}"`;
-    const encabezado = ["Referencia Operativa", "Tipo", "N° Factura SAP", "Estado"].map(escapar).join(";");
-    const filas = filasResumen().map((f) => [f.referencia, f.tipo, f.factura, f.estado].map(escapar).join(";"));
+    const encabezado = ["Referencia Operativa", "Tipo", "N° Factura SAP", "Estado", "Anulado por", "Fecha de anulación"].map(escapar).join(";");
+    const filas = filasResumen().map((f) => [f.referencia, f.tipo, f.factura, f.estado, f.anuladoPor, f.anuladoFecha].map(escapar).join(";"));
     // "sep=;" en la primera línea le dice a Excel qué separador usar, sin importar la
     // configuración regional de quien lo abra (en español, Excel espera ";" porque usa
     // "," como separador decimal — por eso antes se veía todo apretujado en una sola columna).
@@ -304,7 +316,7 @@ export default function AnulacionFacturas() {
   };
 
   return (
-    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "900px" }}>
+    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "1200px" }}>
       <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "25px" }}>
         <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
         <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>{meta.desc}</div>
@@ -394,9 +406,19 @@ export default function AnulacionFacturas() {
                         <td>{f.Tipo}</td>
                         <td>{f.NumeroFacturaSap || <span style={{ color: "#a3acb9" }}>—</span>}</td>
                         <td>
-                          {f.NumeroFacturaSap
-                            ? <Badge text={f.Estado} style={ESTADO_STYLE[f.Estado]} />
-                            : <span style={{ color: "#a3acb9" }}>—</span>}
+                          {f.NumeroFacturaSap ? (
+                            <>
+                              <Badge text={f.Estado} style={ESTADO_STYLE[f.Estado]} />
+                              {f.Estado === "Anulada" && (f.AnuladoPor || f.AnuladoFecha) && (
+                                <div style={{ fontSize: "11px", color: "#697386", marginTop: "3px" }}>
+                                  {f.AnuladoPor || "Usuario no identificado"}
+                                  {f.AnuladoFecha ? ` · ${formatearFechaAnulacion(f.AnuladoFecha)}` : ""}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span style={{ color: "#a3acb9" }}>—</span>
+                          )}
                         </td>
                         <td style={{ textAlign: "right" }}>
                           <button

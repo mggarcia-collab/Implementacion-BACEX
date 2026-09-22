@@ -115,6 +115,12 @@ export default function DocumentoProvisionalNic() {
     if (exitosos === referencias.length) setReferenciasTexto("");
   };
 
+  const handleLimpiar = () => {
+    setReferenciasTexto("");
+    setResultados([]);
+    setProgreso(null);
+  };
+
   return (
     <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "100%" }}>
       <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "25px" }}>
@@ -135,9 +141,14 @@ export default function DocumentoProvisionalNic() {
           />
         </div>
 
-        <button className="btn primary" type="submit" disabled={creando}>
-          {creando ? `Creando... (${progreso?.actual || 0}/${progreso?.total || 0})` : "Crear Documento(s) Provisional(es)"}
-        </button>
+        <div style={{ display: "flex", gap: "10px" }}>
+          <button className="btn primary" type="submit" disabled={creando}>
+            {creando ? `Creando... (${progreso?.actual || 0}/${progreso?.total || 0})` : "Crear Documento(s) Provisional(es)"}
+          </button>
+          <button className="btn ghost" type="button" onClick={handleLimpiar} disabled={creando}>
+            Limpiar
+          </button>
+        </div>
       </form>
 
       {resultados.length > 0 && (

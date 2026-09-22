@@ -41,7 +41,24 @@ export default function Cuadrilla({ onNavigate }) {
   const [ordenElegido, setOrdenElegido] = useState("");
   const [creando, setCreando] = useState(false);
   const [resultado, setResultado] = useState(null);
+  // Cuadrillas (Línea Material) ya creadas antes para esta misma Referencia Operativa —
+  // se muestran apenas se busca, antes de intentar crear una nueva.
+  const [cuadrillasExistentes, setCuadrillasExistentes] = useState(null);
   const showToast = useToast();
+
+  const fetchCuadrillasExistentes = async (referenciaTrim, materialVariableSegmentoId) => {
+    try {
+      const resp = await apiFetch(`/lineasMaterialCuadrilla`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ referencia: referenciaTrim, materialVariableSegmentoId })
+      });
+      const data = await resp.json().catch(() => null);
+      setCuadrillasExistentes(resp.ok && Array.isArray(data) ? data : []);
+    } catch {
+      setCuadrillasExistentes([]);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -66,17 +83,19 @@ export default function Cuadrilla({ onNavigate }) {
     setAduanaKey("");
     setOrdenElegido("");
     setResultado(null);
+    setCuadrillasExistentes(null);
+    const referenciaTrim = referencia.trim();
     try {
       const [respCuadrilla, respAduana] = await Promise.all([
         apiFetch(`/cuadrillaPorReferencia`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ referencia: referencia.trim() })
+          body: JSON.stringify({ referencia: referenciaTrim })
         }),
         apiFetch(`/aduanaPorReferenciaCuadrilla`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ referencia: referencia.trim() })
+          body: JSON.stringify({ referencia: referenciaTrim })
         })
       ]);
 
@@ -86,6 +105,9 @@ export default function Cuadrilla({ onNavigate }) {
         return;
       }
       setDatosCuadrilla(dataCuadrilla);
+      // No se espera (await) esta llamada porque no bloquea el resto del formulario — la
+      // lista de cuadrillas ya creadas se va llenando aparte, en cuanto responda.
+      fetchCuadrillasExistentes(referenciaTrim, dataCuadrilla.MaterialVariableSegmentoId);
 
       const dataAduana = await respAduana.json().catch(() => null);
       const filaAduana = respAduana.ok && Array.isArray(dataAduana) ? dataAduana[0] : null;
@@ -109,6 +131,16 @@ export default function Cuadrilla({ onNavigate }) {
   };
 
   const escalaElegida = datosCuadrilla?.Escalas?.find((e) => String(e.Orden) === ordenElegido) || null;
+
+  const handleLimpiar = () => {
+    setReferencia("");
+    setDatosCuadrilla(null);
+    setAduanaInfo(null);
+    setAduanaKey("");
+    setOrdenElegido("");
+    setResultado(null);
+    setCuadrillasExistentes(null);
+  };
 
   const handleCrear = async () => {
     if (!datosCuadrilla) {
@@ -149,7 +181,32 @@ export default function Cuadrilla({ onNavigate }) {
         return;
       }
       showToast(data?.Message || "✓ Creado con éxito", "ok");
-      setResultado({ referencia: referencia.trim(), aduana: aduanaLabel, escala: escalaElegida, moneda: datosCuadrilla.Moneda, data: data?.Data });
+
+      const referenciaTrim = referencia.trim();
+      const [respDocs, respLineas] = await Promise.all([
+        apiFetch(`/documentosProvisionalesCuadrilla`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ referencia: referenciaTrim })
+        }),
+        apiFetch(`/lineasMaterialCuadrilla`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ referencia: referenciaTrim, materialVariableSegmentoId: datosCuadrilla.MaterialVariableSegmentoId })
+        })
+      ]);
+      const dataDocs = await respDocs.json().catch(() => null);
+      const dataLineas = await respLineas.json().catch(() => null);
+      setResultado({
+        referencia: referenciaTrim,
+        aduana: aduanaLabel,
+        escala: escalaElegida,
+        moneda: datosCuadrilla.Moneda,
+        documentos: respDocs.ok && Array.isArray(dataDocs) ? dataDocs : [],
+        lineas: respLineas.ok && Array.isArray(dataLineas) ? dataLineas : []
+      });
+      // La lista de "ya creadas" también debe reflejar la que se acaba de agregar.
+      fetchCuadrillasExistentes(referenciaTrim, datosCuadrilla.MaterialVariableSegmentoId);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
@@ -179,8 +236,43 @@ export default function Cuadrilla({ onNavigate }) {
             <button type="button" className="btn primary" onClick={handleBuscar} disabled={buscando} style={{ padding: "0 16px" }}>
               {buscando ? "Buscando..." : "Buscar"}
             </button>
+            <button type="button" className="btn ghost" onClick={handleLimpiar} disabled={buscando || creando} style={{ padding: "0 16px" }}>
+              Limpiar
+            </button>
           </div>
         </div>
+
+        {datosCuadrilla && cuadrillasExistentes && cuadrillasExistentes.length > 0 && (
+          <div style={{ marginBottom: "16px" }}>
+            <div style={{ fontSize: "12px", fontWeight: "700", color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+              ⚠️ Esta referencia ya tiene {cuadrillasExistentes.length} Cuadrilla{cuadrillasExistentes.length !== 1 ? "s" : ""} creada{cuadrillasExistentes.length !== 1 ? "s" : ""} antes
+            </div>
+            <table className="doc-table" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  <th>Código ERP</th>
+                  <th style={{ textAlign: "right" }}>Valor</th>
+                  <th style={{ textAlign: "right" }}>Costo</th>
+                  <th>Moneda</th>
+                  <th>Fecha</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cuadrillasExistentes.map((l) => (
+                  <tr key={l.LineaMaterialId}>
+                    <td>{l.MaterialDescripcion}</td>
+                    <td>{l.MaterialErp}</td>
+                    <td style={{ textAlign: "right" }}>{l.Valor ?? "—"}</td>
+                    <td style={{ textAlign: "right" }}>{l.Costo ?? "—"}</td>
+                    <td>{l.MonedaLabel}</td>
+                    <td>{l.CreatedDate ? new Date(l.CreatedDate).toLocaleString("es-HN") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {datosCuadrilla && (
           <>
@@ -283,13 +375,76 @@ export default function Cuadrilla({ onNavigate }) {
               </tr>
             </tbody>
           </table>
-          {resultado.data && (
-            <pre style={{
-              background: "#0f172a", color: "#e2e8f0", padding: "14px", borderRadius: "8px",
-              fontSize: "12px", overflow: "auto", maxHeight: "300px", whiteSpace: "pre-wrap", wordBreak: "break-word"
-            }}>
-              {JSON.stringify(resultado.data, null, 2)}
-            </pre>
+          <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+            Documento Provisional
+          </div>
+          {resultado.documentos.length === 0 ? (
+            <p style={{ color: "#697386", fontSize: "13px", margin: "0 0 14px" }}>No se encontró el Documento Provisional (puede tardar unos segundos en aparecer en el sistema).</p>
+          ) : (
+            <div className="doc-table-wrap" style={{ marginBottom: "14px", maxHeight: "none" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Proveedor</th>
+                    <th>Cliente</th>
+                    <th>Tipo Documento</th>
+                    <th style={{ textAlign: "right" }}>Monto</th>
+                    <th style={{ textAlign: "right" }}>Precio Venta</th>
+                    <th>Moneda</th>
+                    <th>Material</th>
+                    <th>Código ERP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultado.documentos.map((d) => (
+                    <tr key={d.Id}>
+                      <td>{d.Proveedor}</td>
+                      <td>{d.Cliente}</td>
+                      <td>{d.Tipo_Documento}</td>
+                      <td style={{ textAlign: "right" }}>{d.Monto_Documento ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>{d.PrecioVenta ?? "—"}</td>
+                      <td>{d.MonedaLabel}</td>
+                      <td>{d.MaterialProveedor}</td>
+                      <td>{d.CodigoErpReembolso}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+            Línea Material
+          </div>
+          {resultado.lineas.length === 0 ? (
+            <p style={{ color: "#697386", fontSize: "13px", margin: 0 }}>No se encontró la Línea Material (puede tardar unos segundos en aparecer en el sistema).</p>
+          ) : (
+            <div className="doc-table-wrap" style={{ maxHeight: "none" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Referencia Operativa</th>
+                    <th>Material</th>
+                    <th>Código ERP</th>
+                    <th style={{ textAlign: "right" }}>Valor</th>
+                    <th style={{ textAlign: "right" }}>Costo</th>
+                    <th>Moneda</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultado.lineas.map((l) => (
+                    <tr key={l.LineaMaterialId}>
+                      <td>{l.ReferenciaOperativa}</td>
+                      <td>{l.MaterialDescripcion}</td>
+                      <td>{l.MaterialErp}</td>
+                      <td style={{ textAlign: "right" }}>{l.Valor ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>{l.Costo ?? "—"}</td>
+                      <td>{l.MonedaLabel}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}

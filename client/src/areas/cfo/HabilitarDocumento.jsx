@@ -6,7 +6,7 @@ import { useAutorizadorActual } from "./useAutorizadorActual.js";
 export const meta = {
   label: "Habilitar Documento",
   icon: "✅",
-  desc: "Buscar y habilitar documentos asociados a una Referencia Operativa",
+  desc: "Buscar y habilitar documentos",
   kind: "primary",
 };
 
@@ -14,6 +14,13 @@ const currencyFmt = new Intl.NumberFormat("es-HN", { minimumFractionDigits: 2, m
 // timeZone: "UTC" evita que el navegador reste el huso horario local: el driver de SQL
 // etiqueta la fecha como UTC aunque en realidad ya es la hora local guardada en la BD.
 const dateFmt = new Intl.DateTimeFormat("es-HN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "UTC" });
+
+const TIPOS_CRITERIO = [
+  { value: "referencia", label: "Referencia Operativa", placeholder: "Ej: LP-LP-H26-389 (una o varias)" },
+  { value: "sp", label: "Solicitud de Pago (SP)", placeholder: "Ej: SP-000123 (una o varias)" },
+  { value: "documentoFiscal", label: "Número de Documento Fiscal", placeholder: "Ej: 000123 (uno o varios)" },
+  { value: "documentoSap", label: "Número de Documento SAP", placeholder: "Ej: 500001234 (uno o varios)" },
+];
 
 const ESTADO_STYLE = {
   Habilitado: { background: "#d1fae5", color: "#065f46" },
@@ -38,7 +45,8 @@ function Badge({ text, style }) {
 }
 
 export default function HabilitarDocumento() {
-  const [referencia, setReferencia] = useState("");
+  const [tipoCriterio, setTipoCriterio] = useState("referencia");
+  const [valorCriterio, setValorCriterio] = useState("");
   const [codigoErp, setCodigoErp] = useState("");
   const [codigoErpOptions, setCodigoErpOptions] = useState([]);
   const autorizadorActual = useAutorizadorActual();
@@ -68,12 +76,39 @@ export default function HabilitarDocumento() {
     });
   }, [documentos]);
 
-  const fetchDocumentos = async (referencias) => {
+  // El valor admite varios elementos separados por coma, espacio o salto de línea.
+  const partirValores = (texto) => texto.split(/[,\s\n]+/).map((v) => v.trim()).filter(Boolean);
+
+  const tipoCriterioActual = TIPOS_CRITERIO.find((t) => t.value === tipoCriterio) || TIPOS_CRITERIO[0];
+
+  // Según el tipo elegido en el combo, los valores ingresados van a una sola de estas listas;
+  // las demás quedan vacías (el backend ya soporta combinarlas, pero aquí solo se usa una a la vez).
+  const criteriosBusqueda = () => {
+    const valores = partirValores(valorCriterio);
+    return {
+      referencias: tipoCriterio === "referencia" ? valores : [],
+      sps: tipoCriterio === "sp" ? valores : [],
+      documentosFiscales: tipoCriterio === "documentoFiscal" ? valores : [],
+      documentosSap: tipoCriterio === "documentoSap" ? valores : [],
+    };
+  };
+
+  const hayCriterio = Boolean(valorCriterio.trim());
+
+  const handleTipoCriterioChange = (e) => {
+    setTipoCriterio(e.target.value);
+    setValorCriterio("");
+    setCodigoErp("");
+    setCodigoErpOptions([]);
+  };
+
+  const fetchDocumentos = async () => {
+    const { referencias, sps, documentosFiscales, documentosSap } = criteriosBusqueda();
     try {
       const response = await apiFetch(`/documentosPorReferencia`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referencias, codigoErp: codigoErp.trim() || undefined })
+        body: JSON.stringify({ referencias, sps, documentosFiscales, documentosSap, codigoErp: codigoErp.trim() || undefined })
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -91,50 +126,51 @@ export default function HabilitarDocumento() {
     }
   };
 
-  // Refresca la tabla con la referencia actualmente filtrada, para que el Estado/Dueño
-  // que se ve en pantalla siempre sea el real del servidor después de habilitar/deshabilitar
-  // (y no una suposición local que puede quedar desactualizada si algo más modificó el documento).
+  // Refresca la tabla con el criterio actualmente filtrado, para que el Estado/Dueño que se
+  // ve en pantalla siempre sea el real del servidor después de habilitar/deshabilitar (y no
+  // una suposición local que puede quedar desactualizada si algo más modificó el documento).
   const refrescarDocumentos = async () => {
-    const referencias = referencia.split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean);
-    if (referencias.length === 0) return;
-    await fetchDocumentos(referencias);
+    if (!hayCriterio) return;
+    await fetchDocumentos();
   };
 
   const handleBuscar = async () => {
-    const referencias = referencia.split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean);
-    if (referencias.length === 0) {
-      showToast("Ingrese al menos una Referencia Operativa para buscar", "warn");
+    if (!hayCriterio) {
+      showToast(`Ingrese al menos un valor de ${tipoCriterioActual.label} para buscar`, "warn");
       return;
     }
     setLoading(true);
     try {
-      await fetchDocumentos(referencias);
+      await fetchDocumentos();
     } finally {
       setLoading(false);
     }
   };
 
   const handleClear = () => {
-    setReferencia("");
+    setTipoCriterio("referencia");
+    setValorCriterio("");
     setCodigoErp("");
     setCodigoErpOptions([]);
     setDocumentos([]);
     setSearched(false);
   };
 
-  // Se dispara al salir del campo de Referencia: llena el desplegable de Código ERP
-  // solo con los códigos que realmente están ligados a algún documento de esa(s) referencia(s).
+  // Se dispara al salir del campo de valor: llena el desplegable de Código ERP solo con los
+  // códigos que realmente están ligados a algún documento que coincida con el criterio actual.
+  // Solo aplica cuando se busca por Referencia Operativa (el material/Código ERP se identifica
+  // por referencia; con SP, Documento Fiscal o Documento SAP el filtro queda deshabilitado).
   const fetchCodigosErp = async () => {
-    const referencias = referencia.split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean);
-    if (referencias.length === 0) {
+    if (tipoCriterio !== "referencia" || !hayCriterio) {
       setCodigoErpOptions([]);
       return;
     }
+    const { referencias, sps, documentosFiscales, documentosSap } = criteriosBusqueda();
     try {
       const response = await apiFetch(`/codigosErpPorReferencia`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referencias })
+        body: JSON.stringify({ referencias, sps, documentosFiscales, documentosSap })
       });
       const data = await response.json().catch(() => []);
       const opciones = Array.isArray(data) ? data : [];
@@ -219,24 +255,45 @@ export default function HabilitarDocumento() {
       </div>
 
       <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "24px" }}>
-        <div style={{ display: "flex", gap: "12px", alignItems: "flex-end" }}>
+        <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#697386" }}>
+          Elija con qué desea buscar y luego ingrese uno o varios valores (separados por coma, espacio o salto de línea).
+        </p>
+        <div style={{ display: "flex", gap: "12px", alignItems: "flex-end", marginBottom: "12px" }}>
+          <div style={{ flex: 1, minWidth: "220px" }}>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Buscar por
+            </label>
+            <select
+              value={tipoCriterio}
+              onChange={handleTipoCriterioChange}
+              disabled={loading}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+            >
+              {TIPOS_CRITERIO.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </div>
           <div style={{ flex: 2 }}>
             <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Referencia Operativa
+              {tipoCriterioActual.label}
             </label>
             <div style={{ position: "relative" }}>
               <span style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "#a3acb9", fontSize: "16px" }}>🔍</span>
               <input
                 type="text"
-                placeholder="Ingrese una o varias Referencias Operativas..."
-                value={referencia}
-                onChange={(e) => setReferencia(e.target.value)}
+                placeholder={tipoCriterioActual.placeholder}
+                value={valorCriterio}
+                onChange={(e) => setValorCriterio(e.target.value)}
                 onBlur={fetchCodigosErp}
                 style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px 10px 38px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
                 disabled={loading}
               />
             </div>
           </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "12px", alignItems: "flex-end" }}>
           <div style={{ flex: 1, minWidth: "180px" }}>
             <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
               Filtrar por Código ERP
@@ -244,11 +301,17 @@ export default function HabilitarDocumento() {
             <select
               value={codigoErp}
               onChange={(e) => setCodigoErp(e.target.value)}
-              disabled={loading || !referencia.trim() || codigoErpOptions.length === 0}
+              disabled={loading || tipoCriterio !== "referencia" || !hayCriterio || codigoErpOptions.length === 0}
               style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
             >
               <option value="">
-                {!referencia.trim() ? "Ingrese primero la Referencia" : codigoErpOptions.length === 0 ? "Sin códigos ERP" : "Todos los códigos"}
+                {tipoCriterio !== "referencia"
+                  ? "Solo disponible al buscar por Referencia Operativa"
+                  : !hayCriterio
+                  ? "Ingrese primero una Referencia Operativa"
+                  : codigoErpOptions.length === 0
+                  ? "Sin códigos ERP"
+                  : "Todos los códigos"}
               </option>
               {codigoErpOptions.map((c) => (
                 <option key={c} value={c}>{c}</option>
@@ -280,7 +343,7 @@ export default function HabilitarDocumento() {
       </div>
 
       {searched && documentos.length === 0 && (
-        <p style={{ color: "#697386", fontSize: "14px" }}>No se encontraron documentos para esa referencia.</p>
+        <p style={{ color: "#697386", fontSize: "14px" }}>No se encontraron documentos para esos criterios de búsqueda.</p>
       )}
 
       {documentos.length > 0 && (

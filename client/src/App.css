@@ -219,6 +219,11 @@ body {
 
 .sidebar {
   width: 250px;
+  /* height/min-height explícitos (no solo "stretch" implícito del flex row padre): sin esto,
+     el overflow-y de abajo puede no activarse de verdad y la lista de módulos queda más alta
+     que la pantalla sin poder bajar hasta el final con scroll. */
+  height: 100%;
+  min-height: 0;
   background: #ffffff;
   border-right: 1px solid var(--border);
   padding: 20px 0;

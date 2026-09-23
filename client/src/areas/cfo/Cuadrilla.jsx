@@ -44,19 +44,33 @@ export default function Cuadrilla({ onNavigate }) {
   // Cuadrillas (Línea Material) ya creadas antes para esta misma Referencia Operativa —
   // se muestran apenas se busca, antes de intentar crear una nueva.
   const [cuadrillasExistentes, setCuadrillasExistentes] = useState(null);
+  // Documentos Provisionales de Cuadrilla ya creados antes para esta Referencia Operativa —
+  // se cruza contra cuadrillasExistentes para detectar el caso "Docto sin Línea Material".
+  const [documentosProvisionalesExistentes, setDocumentosProvisionalesExistentes] = useState(null);
+  const [avisoAgregarLineaDescartado, setAvisoAgregarLineaDescartado] = useState(false);
   const showToast = useToast();
 
-  const fetchCuadrillasExistentes = async (referenciaTrim, materialVariableSegmentoId) => {
+  const fetchEstadoCuadrilla = async (referenciaTrim, materialVariableSegmentoId) => {
     try {
-      const resp = await apiFetch(`/lineasMaterialCuadrilla`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referencia: referenciaTrim, materialVariableSegmentoId })
-      });
-      const data = await resp.json().catch(() => null);
-      setCuadrillasExistentes(resp.ok && Array.isArray(data) ? data : []);
+      const [respLineas, respDocs] = await Promise.all([
+        apiFetch(`/lineasMaterialCuadrilla`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ referencia: referenciaTrim, materialVariableSegmentoId })
+        }),
+        apiFetch(`/documentosProvisionalesCuadrilla`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ referencia: referenciaTrim })
+        })
+      ]);
+      const dataLineas = await respLineas.json().catch(() => null);
+      const dataDocs = await respDocs.json().catch(() => null);
+      setCuadrillasExistentes(respLineas.ok && Array.isArray(dataLineas) ? dataLineas : []);
+      setDocumentosProvisionalesExistentes(respDocs.ok && Array.isArray(dataDocs) ? dataDocs : []);
     } catch {
       setCuadrillasExistentes([]);
+      setDocumentosProvisionalesExistentes([]);
     }
   };
 
@@ -84,6 +98,8 @@ export default function Cuadrilla({ onNavigate }) {
     setOrdenElegido("");
     setResultado(null);
     setCuadrillasExistentes(null);
+    setDocumentosProvisionalesExistentes(null);
+    setAvisoAgregarLineaDescartado(false);
     const referenciaTrim = referencia.trim();
     try {
       const [respCuadrilla, respAduana] = await Promise.all([
@@ -106,8 +122,9 @@ export default function Cuadrilla({ onNavigate }) {
       }
       setDatosCuadrilla(dataCuadrilla);
       // No se espera (await) esta llamada porque no bloquea el resto del formulario — la
-      // lista de cuadrillas ya creadas se va llenando aparte, en cuanto responda.
-      fetchCuadrillasExistentes(referenciaTrim, dataCuadrilla.MaterialVariableSegmentoId);
+      // lista de cuadrillas ya creadas (y el aviso de Docto sin Línea) se va llenando aparte,
+      // en cuanto responda.
+      fetchEstadoCuadrilla(referenciaTrim, dataCuadrilla.MaterialVariableSegmentoId);
 
       const dataAduana = await respAduana.json().catch(() => null);
       const filaAduana = respAduana.ok && Array.isArray(dataAduana) ? dataAduana[0] : null;
@@ -140,6 +157,8 @@ export default function Cuadrilla({ onNavigate }) {
     setOrdenElegido("");
     setResultado(null);
     setCuadrillasExistentes(null);
+    setDocumentosProvisionalesExistentes(null);
+    setAvisoAgregarLineaDescartado(false);
   };
 
   const handleCrear = async () => {
@@ -206,7 +225,7 @@ export default function Cuadrilla({ onNavigate }) {
         lineas: respLineas.ok && Array.isArray(dataLineas) ? dataLineas : []
       });
       // La lista de "ya creadas" también debe reflejar la que se acaba de agregar.
-      fetchCuadrillasExistentes(referenciaTrim, datosCuadrilla.MaterialVariableSegmentoId);
+      fetchEstadoCuadrilla(referenciaTrim, datosCuadrilla.MaterialVariableSegmentoId);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
@@ -271,6 +290,42 @@ export default function Cuadrilla({ onNavigate }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {datosCuadrilla && cuadrillasExistentes && documentosProvisionalesExistentes &&
+          cuadrillasExistentes.length === 0 && documentosProvisionalesExistentes.length > 0 &&
+          !avisoAgregarLineaDescartado && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+            background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
+            padding: "14px 16px", marginBottom: "16px"
+          }}>
+            <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "260px" }}>
+              ⚠️ Referencia Operativa con Documento Provisional sin Línea Material. ¿Desea agregar línea?
+            </span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={() => onNavigate?.("cfo", "eliminarModificarLineaMaterial", {
+                  referencia: referencia.trim(),
+                  autoAgregar: true,
+                  token: Date.now()
+                })}
+                style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+              >
+                Sí, agregar línea
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setAvisoAgregarLineaDescartado(true)}
+                style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+              >
+                No
+              </button>
+            </div>
           </div>
         )}
 

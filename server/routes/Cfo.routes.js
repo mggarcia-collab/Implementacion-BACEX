@@ -4067,4 +4067,773 @@ app.post('/eliminarCuentaBancoPersona', requirePermission('cfo', 'crearProveedor
     }
 });
 
+// --- Eliminar y Modificar Línea Material (CfoNetCore: LineaMaterialFlat / LineaMaterialVariable) ---
+// Ambas cuelgan de SalesOrderDetalle → SalesOrder, así que sin una SalesOrder ya creada para la
+// Referencia Operativa no hay nada que buscar (el usuario debe validar primero en la Matriz de
+// Acción y en Habilitar SalesOrder).
+
+const MONEDAS_LINEA_MATERIAL = { 340: "Lempiras (HNL)", 840: "Dólares (USD)", 558: "Córdobas (NIO)", 188: "Colones (CRC)", 320: "Quetzales (GTQ)" };
+function monedaLineaMaterialLabel(value) {
+    return MONEDAS_LINEA_MATERIAL[value] || (value != null ? String(value) : "—");
+}
+
+// Material Fijo y Material Variable son la misma clase de comando en la API externa
+// (SalesOrderService+UpdateLineaMaterialFlat/Variable+Command: Id, Valor, Costo, Currency_Value,
+// Observacion, ModifiedBy, IsSoftDeleted) — eliminar es la misma llamada que modificar, solo que
+// con IsSoftDeleted:true, confirmado en el swagger de cfows.
+const TIPOS_LINEA_MATERIAL = {
+    fijo: { url: "https://cfows.azurewebsites.net/api/SalesOrder/UpdateLineaMaterialFlat", label: "Material Fijo" },
+    variable: { url: "https://cfows.azurewebsites.net/api/SalesOrder/UpdateLineaMaterialVariable", label: "Material Variable" },
+};
+
+// Variante "List" de los mismos dos comandos: un solo ModifiedBy/Observacion compartido para
+// todo el lote, más un arreglo con un {Id, IsSoftDeleted} por cada Línea — permite eliminar
+// varias de una sola llamada en vez de una por una.
+const TIPOS_LINEA_MATERIAL_LOTE = {
+    fijo: { url: "https://cfows.azurewebsites.net/api/SalesOrder/UpdateLineaMaterialFlatList", label: "Material Fijo" },
+    variable: { url: "https://cfows.azurewebsites.net/api/SalesOrder/UpdateLineaMaterialVariableList", label: "Material Variable" },
+};
+
+app.post('/lineasMaterialPorReferencia', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { referencia } = req.body;
+        const referenciaTrim = (referencia || "").trim();
+        if (!referenciaTrim) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const so = await pool.request()
+            .input('referencia', sql.VarChar, referenciaTrim)
+            .query(`SELECT [Id], [Status_Value] FROM [dbo].[SalesOrder] WHERE [ReferenciaOperativa] = @referencia AND [IsSoftDeleted] = 0`);
+
+        if (so.recordset.length === 0) {
+            return res.status(404).json({
+                Message: "No existe una SalesOrder creada para esta Referencia Operativa. Valide primero en la Matriz de Acción y en Habilitar SalesOrder.",
+                NoExisteSalesOrder: true
+            });
+        }
+        const salesOrderId = so.recordset[0].Id;
+
+        const fijos = await pool.request()
+            .input('soId', sql.UniqueIdentifier, salesOrderId)
+            .query(`
+                SELECT LMF.[Id], LMF.[Descripcion], LMF.[MaterialErp], LMF.[Valor], LMF.[Costo], LMF.[Currency_Value], LMF.[Observacion], LMF.[CreatedDate]
+                FROM [dbo].[LineaMaterialFlat] LMF
+                JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LMF.[SalesOrderDetalleId]
+                WHERE SD.[SalesOrderId] = @soId AND LMF.[IsSoftDeleted] = 0
+                ORDER BY LMF.[Descripcion] ASC
+            `);
+
+        const variables = await pool.request()
+            .input('soId', sql.UniqueIdentifier, salesOrderId)
+            .query(`
+                SELECT LV.[Id], LV.[Descripcion], LV.[MaterialErp], LV.[Valor], LV.[Costo], LV.[Currency_Value], LV.[Observacion], LV.[CreatedDate]
+                FROM [dbo].[LineaMaterialVariable] LV
+                JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LV.[SalesOrderDetalleId]
+                WHERE SD.[SalesOrderId] = @soId AND LV.[IsSoftDeleted] = 0
+                ORDER BY LV.[Descripcion] ASC
+            `);
+
+        const conMoneda = (filas) => filas.map((f) => ({ ...f, MonedaLabel: monedaLineaMaterialLabel(f.Currency_Value) }));
+
+        return res.json({
+            SalesOrderId: salesOrderId,
+            StatusValue: so.recordset[0].Status_Value,
+            MaterialesFijos: conMoneda(fijos.recordset),
+            MaterialesVariables: conMoneda(variables.recordset),
+        });
+
+    } catch (error) {
+        console.error("Error en lineasMaterialPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al obtener Líneas de Material", Error: error.message });
+    }
+});
+
+// Materiales Fijos/Variables que SÍ están configurados en la negociación (Componente) de esta
+// Referencia Operativa, pero que no necesariamente están agregados todavía como Línea de
+// Material del SalesOrder — son los candidatos que se pueden agregar con /agregarLineaMaterial.
+// Solo se puede agregar un material si su MaterialFlatSegmento/MaterialVariableSegmento existe
+// en la negociación; por eso se resuelven aparte del listado de líneas ya creadas.
+app.post('/materialesDisponiblesPorReferencia', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { referencia } = req.body;
+        const referenciaTrim = (referencia || "").trim();
+        if (!referenciaTrim) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+
+        // Mismo primer paso que /cuadrillaPorReferencia: resolver el Componente (y su Segmento,
+        // el "Segmentos[0].Id" que exige AddLineaMaterial) de la negociación de esta referencia.
+        const base = await pool.request()
+            .input('referencia', sql.VarChar, referenciaTrim)
+            .query(`
+                SELECT TOP 1 SO.[Id] AS SalesOrderId, C.[Id] AS ComponenteId, C.[SegmentoId], C.[Descripcion] AS ComponenteDescripcion
+                FROM [dbo].[SalesOrderDetalle] SD
+                LEFT JOIN [dbo].[SalesOrder] SO ON SO.[Id] = SD.[SalesOrderId]
+                LEFT JOIN [dbo].[Componente] C ON C.[Id] = SD.[ComponenteId]
+                WHERE SO.[ReferenciaOperativa] = @referencia AND SO.[IsSoftDeleted] = 0
+            `);
+
+        const fila = base.recordset[0];
+        if (!fila || !fila.ComponenteId) {
+            return res.status(404).json({
+                Message: "No existe una SalesOrder creada para esta Referencia Operativa. Valide primero en la Matriz de Acción y en Habilitar SalesOrder.",
+                NoExisteSalesOrder: true
+            });
+        }
+
+        const variables = await pool.request()
+            .input('cid', sql.UniqueIdentifier, fila.ComponenteId)
+            .input('soId', sql.UniqueIdentifier, fila.SalesOrderId)
+            .query(`
+                SELECT
+                    MVV.[Id] AS MaterialVariableValorId,
+                    MS.[Id] AS MaterialVariableSegmentoId,
+                    MVV.[Valor],
+                    MVV.[Costo],
+                    MS.[CodigoErp],
+                    MF.[Descripcion] AS NombreMaterial,
+                    MS.[Currency_Value],
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM [dbo].[LineaMaterialVariable] LV
+                        JOIN [dbo].[SalesOrderDetalle] SD2 ON SD2.[Id] = LV.[SalesOrderDetalleId]
+                        WHERE SD2.[SalesOrderId] = @soId AND LV.[MaterialVariableValorId] = MVV.[Id] AND LV.[IsSoftDeleted] = 0
+                    ) THEN 1 ELSE 0 END AS YaAgregado
+                FROM [dbo].[MaterialVariableValor] MVV
+                JOIN [dbo].[MaterialVariableSegmento] MS ON MS.[Id] = MVV.[MaterialVariableSegmentoId]
+                JOIN [dbo].[MaterialVariable] MF ON MF.[Id] = MS.[MaterialVariableId]
+                WHERE MVV.[ComponenteId] = @cid AND MVV.[IsSoftDeleted] = 0
+                ORDER BY MF.[Descripcion] ASC
+            `);
+
+        const fijos = await pool.request()
+            .input('cid', sql.UniqueIdentifier, fila.ComponenteId)
+            .input('soId', sql.UniqueIdentifier, fila.SalesOrderId)
+            .query(`
+                SELECT
+                    MFV.[Id] AS MaterialFlatValorId,
+                    MS.[Id] AS MaterialFlatSegmentoId,
+                    MFV.[Valor],
+                    MFV.[Costo],
+                    MS.[CodigoErp],
+                    MF.[Descripcion] AS NombreMaterial,
+                    MS.[Currency_Value],
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM [dbo].[LineaMaterialFlat] LF
+                        JOIN [dbo].[SalesOrderDetalle] SD2 ON SD2.[Id] = LF.[SalesOrderDetalleId]
+                        WHERE SD2.[SalesOrderId] = @soId AND LF.[MaterialFlatValorId] = MFV.[Id] AND LF.[IsSoftDeleted] = 0
+                    ) THEN 1 ELSE 0 END AS YaAgregado
+                FROM [dbo].[MaterialFlatValor] MFV
+                JOIN [dbo].[MaterialFlatSegmento] MS ON MS.[Id] = MFV.[MaterialFlatSegmentoId]
+                JOIN [dbo].[MaterialFlat] MF ON MF.[Id] = MS.[MaterialFlatId]
+                WHERE MFV.[ComponenteId] = @cid AND MFV.[IsSoftDeleted] = 0
+                ORDER BY MF.[Descripcion] ASC
+            `);
+
+        const conMoneda = (filas) => filas.map((f) => ({ ...f, MonedaLabel: monedaLineaMaterialLabel(f.Currency_Value), YaAgregado: !!f.YaAgregado }));
+
+        return res.json({
+            SalesOrderId: fila.SalesOrderId,
+            SegmentoId: fila.SegmentoId,
+            ComponenteDescripcion: fila.ComponenteDescripcion,
+            MaterialesFijosDisponibles: conMoneda(fijos.recordset),
+            MaterialesVariablesDisponibles: conMoneda(variables.recordset),
+        });
+
+    } catch (error) {
+        console.error("Error en materialesDisponiblesPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al obtener materiales disponibles", Error: error.message });
+    }
+});
+
+app.post('/agregarLineaMaterial', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { ReferenciaOperativa, SegmentoId, MaterialFlatSegmentoIds, MaterialVariableSegmentoIds, CreatedBy } = req.body;
+        const referenciaTrim = (ReferenciaOperativa || "").trim();
+        const flatIds = Array.isArray(MaterialFlatSegmentoIds) ? MaterialFlatSegmentoIds.filter(Boolean) : [];
+        const variableIds = Array.isArray(MaterialVariableSegmentoIds) ? MaterialVariableSegmentoIds.filter(Boolean) : [];
+
+        if (!referenciaTrim) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        if (!SegmentoId) {
+            return res.status(400).json({ Message: "Falta el Segmento de la negociación (vuelva a buscar la Referencia Operativa)." });
+        }
+        if (flatIds.length === 0 && variableIds.length === 0) {
+            return res.status(400).json({ Message: "Debe seleccionar al menos un material para agregar." });
+        }
+        if (!CreatedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+        }
+
+        // Un mismo Segmento puede llevar materiales Fijos y Variables mezclados en la misma
+        // llamada (confirmado en el swagger de cfows: CommandSegmento acepta ambos arreglos).
+        const segmento = { Id: SegmentoId };
+        if (flatIds.length > 0) segmento.MaterialFlatSegmentoIds = flatIds;
+        if (variableIds.length > 0) segmento.MaterialVariableSegmentos = variableIds.map((id) => ({ Id: id, Parametro: 1 }));
+
+        const body = {
+            ReferenciaOperativa: referenciaTrim,
+            Tipo: 1,
+            CreatedBy,
+            Segmentos: [segmento]
+        };
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/SalesOrder/AddLineaMaterial", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`SalesOrder/AddLineaMaterial → HTTP ${resp.status} para ${referenciaTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`SalesOrder/AddLineaMaterial → ${referenciaTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "eliminarModificarLineaMaterial",
+            moduloLabel: "Eliminar y Modificar Línea Material",
+            accion: `Agregó ${flatIds.length + variableIds.length} material(es) (${flatIds.length} fijo(s), ${variableIds.length} variable(s))`,
+            referencia: referenciaTrim
+        });
+
+        return res.status(200).json({ Message: "Material(es) agregado(s) con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en agregarLineaMaterial:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/modificarLineaMaterial', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { Tipo, Id, Valor, Costo, MonedaValue, ModifiedBy, Observacion } = req.body;
+        const tipo = TIPOS_LINEA_MATERIAL[Tipo];
+
+        if (!tipo) {
+            return res.status(400).json({ Message: "Tipo de Línea de Material inválido." });
+        }
+        if (!Id) {
+            return res.status(400).json({ Message: "La Línea de Material es requerida." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+        if (!Observacion || !Observacion.trim()) {
+            return res.status(400).json({ Message: "Debe indicar la observación (motivo del cambio)." });
+        }
+
+        const body = { Id, ModifiedBy, Observacion: Observacion.trim(), IsSoftDeleted: false };
+        if (Valor !== undefined && Valor !== null && Valor !== "") body.Valor = Number(Valor);
+        if (Costo !== undefined && Costo !== null && Costo !== "") body.Costo = Number(Costo);
+        if (MonedaValue !== undefined && MonedaValue !== null && MonedaValue !== "") body.Currency_Value = Number(MonedaValue);
+
+        const resp = await fetch(tipo.url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`${tipo.url} (modificar) → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`${tipo.url} (modificar) → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "eliminarModificarLineaMaterial",
+            moduloLabel: "Eliminar y Modificar Línea Material",
+            accion: `Modificó ${tipo.label}`,
+            referencia: Id,
+            motivo: Observacion
+        });
+
+        return res.status(200).json({ Message: `${tipo.label} modificado con éxito`, Data: data });
+
+    } catch (error) {
+        console.error("Error en modificarLineaMaterial:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+app.post('/eliminarLineaMaterial', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { Tipo, Id, ModifiedBy, Observacion } = req.body;
+        const tipo = TIPOS_LINEA_MATERIAL[Tipo];
+
+        if (!tipo) {
+            return res.status(400).json({ Message: "Tipo de Línea de Material inválido." });
+        }
+        if (!Id) {
+            return res.status(400).json({ Message: "La Línea de Material es requerida." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+        if (!Observacion || !Observacion.trim()) {
+            return res.status(400).json({ Message: "Debe indicar la observación (motivo de la eliminación)." });
+        }
+
+        const resp = await fetch(tipo.url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ Id, ModifiedBy, Observacion: Observacion.trim(), IsSoftDeleted: true })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`${tipo.url} (eliminar) → HTTP ${resp.status} para ${Id}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`${tipo.url} (eliminar) → ${Id}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "eliminarModificarLineaMaterial",
+            moduloLabel: "Eliminar y Modificar Línea Material",
+            accion: `Eliminó ${tipo.label}`,
+            referencia: Id,
+            motivo: Observacion
+        });
+
+        return res.status(200).json({ Message: `${tipo.label} eliminado con éxito`, Data: data });
+
+    } catch (error) {
+        console.error("Error en eliminarLineaMaterial:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Elimina varias Líneas de Material del mismo tipo (todas Fijas o todas Variables) de una sola
+// vez, con un único motivo compartido para todo el lote.
+app.post('/eliminarLineasMaterial', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
+    try {
+        const { Tipo, Ids, ModifiedBy, Observacion } = req.body;
+        const tipo = TIPOS_LINEA_MATERIAL_LOTE[Tipo];
+        const idsLista = Array.isArray(Ids) ? Ids.filter(Boolean) : [];
+
+        if (!tipo) {
+            return res.status(400).json({ Message: "Tipo de Línea de Material inválido." });
+        }
+        if (idsLista.length === 0) {
+            return res.status(400).json({ Message: "Debe seleccionar al menos una Línea de Material." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+        if (!Observacion || !Observacion.trim()) {
+            return res.status(400).json({ Message: "Debe indicar la observación (motivo de la eliminación)." });
+        }
+
+        const body = {
+            ModifiedBy,
+            Observacion: Observacion.trim(),
+            List: idsLista.map((id) => ({ Id: id, IsSoftDeleted: true }))
+        };
+
+        const resp = await fetch(tipo.url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`${tipo.url} (eliminar lote) → HTTP ${resp.status} para ${idsLista.length} líneas:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`${tipo.url} (eliminar lote) → ${idsLista.length} líneas:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "eliminarModificarLineaMaterial",
+            moduloLabel: "Eliminar y Modificar Línea Material",
+            accion: `Eliminó ${idsLista.length} ${tipo.label}(s) en lote`,
+            referencia: idsLista.join(", "),
+            motivo: Observacion
+        });
+
+        return res.status(200).json({ Message: `${idsLista.length} ${tipo.label}(s) eliminado(s) con éxito`, Data: data });
+
+    } catch (error) {
+        console.error("Error en eliminarLineasMaterial:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// --- Crear Documentos (después de Facturación): Provisionales / Fiscales / Internos ---
+// Un solo módulo con varias secciones, construidas una a la vez. Esta primera parte es
+// Documentos Provisionales (api/DocumentoProvisional/CreateMany).
+
+// Por ahora estos documentos solo se manejan para Honduras y Guatemala (División confirmada
+// como "9095" para ambas); el resto de países se habilita cuando el negocio confirme su
+// propia División — no se debe adivinar ese valor, causaría un documento mal enrutado.
+const PAISES_DOCUMENTO_POST_FACTURACION = {
+    honduras: { paisId: PAISES_PROVEEDOR_CLIENTE.honduras.id, tenantId: TENANTS_PROVEEDOR_CFO.honduras.id, division: "9095", label: "Honduras" },
+    guatemala: { paisId: PAISES_PROVEEDOR_CLIENTE.guatemala.id, tenantId: TENANTS_PROVEEDOR_CFO.guatemala.id, division: "9095", label: "Guatemala" },
+};
+
+const MONEDAS_DOCUMENTO_POST_FACTURACION = { 340: "Lempiras (HNL)", 840: "Dólares (USD)", 558: "Córdobas (NIO)", 188: "Colones (CRC)", 320: "Quetzales (GTQ)" };
+
+const DUENOS_DOCUMENTO = { 1: "Vesta", 2: "Cliente" };
+
+app.post('/docProvisionalBuscarProveedores', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const nombreTrim = (req.body.nombre || "").trim();
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "Ingrese un nombre para buscar." });
+        }
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('nombre', sql.VarChar, `%${nombreTrim}%`)
+            .query(`
+                SELECT TOP 15 Id AS PersonaId, Nombre, IdFiscal
+                FROM [dbo].[Persona]
+                WHERE Discriminator = 'PersonaJuridicaProveedor'
+                  AND IsSoftDeleted = 0
+                  AND Nombre LIKE @nombre
+                ORDER BY Nombre
+            `);
+        return res.json(resultado.recordset);
+    } catch (error) {
+        console.error("Error en docProvisionalBuscarProveedores:", error);
+        return res.status(500).json({ Message: "Error al buscar Proveedores", Error: error.message });
+    }
+});
+
+// Resuelve el Cliente (dbo.Cliente en CFO) de una Referencia Operativa: primero se busca en
+// HojaDeRuta (su ClienteId ahí ES directamente el PersonaId real — confirmado contra datos
+// reales, no hace falta cruzar por nombre) y luego se busca la fila de CFO para ese
+// PersonaId + el Tenant del País elegido (el Id propio de dbo.Cliente NO es igual al
+// PersonaId de forma confiable, se probó contra la tabla real: solo coincide en un % de
+// los casos, así que siempre hay que resolverlo con esta consulta).
+async function resolverClienteCfoPorReferencia(referencia, tenantId) {
+    const poolHr = await conexion(BasesDeDatos.HojaDeRuta);
+    const hr = await poolHr.request()
+        .input('referencia', sql.VarChar, referencia)
+        .query(`SELECT TOP 1 ClienteId, ClienteDescripcion FROM HojaRuta WHERE NumeroHojaRuta = @referencia`);
+    const filaHr = hr.recordset[0];
+    if (!filaHr || !filaHr.ClienteId) {
+        return { error: "No existe Hoja de Ruta para esta Referencia Operativa.", NoExisteHojaRuta: true };
+    }
+    const poolCfo = await conexion(BasesDeDatos.CfoNetCore);
+    const cliente = await poolCfo.request()
+        .input('personaId', sql.UniqueIdentifier, filaHr.ClienteId)
+        .input('tenantId', sql.UniqueIdentifier, tenantId)
+        .query(`SELECT TOP 1 Id FROM [dbo].[Cliente] WHERE PersonaId = @personaId AND TenantId = @tenantId AND IsSoftDeleted = 0`);
+    if (!cliente.recordset[0]) {
+        return {
+            error: `El Cliente "${filaHr.ClienteDescripcion}" no está creado en CFO para este País. Créelo primero en Crear Proveedor/Cliente.`,
+            NoExisteClienteCfo: true,
+            ClienteDescripcion: filaHr.ClienteDescripcion
+        };
+    }
+    return { ClienteId: cliente.recordset[0].Id, ClienteDescripcion: filaHr.ClienteDescripcion };
+}
+
+app.post('/docProvisionalClientePorReferencia', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const { referencia, paisKey } = req.body;
+        const referenciaTrim = (referencia || "").trim();
+        const pais = PAISES_DOCUMENTO_POST_FACTURACION[paisKey];
+        if (!referenciaTrim) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Seleccione un País válido." });
+        }
+        const resultado = await resolverClienteCfoPorReferencia(referenciaTrim, pais.tenantId);
+        if (resultado.error) {
+            return res.status(404).json(resultado);
+        }
+        return res.json(resultado);
+    } catch (error) {
+        console.error("Error en docProvisionalClientePorReferencia:", error);
+        return res.status(500).json({ Message: "Error al resolver el Cliente de la Referencia Operativa", Error: error.message });
+    }
+});
+
+// Resuelve el Proveedor (dbo.Proveedor en CFO) de una Persona + Tenant (mismo motivo que
+// resolverClienteCfoPorReferencia: el Id de dbo.Proveedor no es igual al PersonaId de forma
+// confiable), y trae la lista de Materiales que ese Proveedor ya tiene agregados en CFO.
+async function resolverProveedorCfoPorPersona(proveedorPersonaId, tenantId) {
+    const poolCfo = await conexion(BasesDeDatos.CfoNetCore);
+    const proveedor = await poolCfo.request()
+        .input('personaId', sql.UniqueIdentifier, proveedorPersonaId)
+        .input('tenantId', sql.UniqueIdentifier, tenantId)
+        .query(`SELECT TOP 1 Id FROM [dbo].[Proveedor] WHERE PersonaId = @personaId AND TenantId = @tenantId AND IsSoftDeleted = 0`);
+    const filaProveedor = proveedor.recordset[0];
+    if (!filaProveedor) {
+        return { error: "Este Proveedor no está creado en CFO para el País seleccionado. Créelo primero en Crear Proveedor/Cliente.", NoExisteProveedorCfo: true };
+    }
+    const materiales = await poolCfo.request()
+        .input('proveedorId', sql.UniqueIdentifier, filaProveedor.Id)
+        .query(`
+            SELECT Id, Descripcion, CodigoMaterial
+            FROM [dbo].[MaterialProveedor]
+            WHERE ProveedorId = @proveedorId AND IsSoftDeleted = 0
+            ORDER BY Descripcion
+        `);
+    return { ProveedorId: filaProveedor.Id, Materiales: materiales.recordset };
+}
+
+app.post('/docProvisionalProveedorEnCfo', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const { proveedorPersonaId, paisKey } = req.body;
+        const pais = PAISES_DOCUMENTO_POST_FACTURACION[paisKey];
+        if (!proveedorPersonaId) {
+            return res.status(400).json({ Message: "Seleccione un Proveedor." });
+        }
+        if (!pais) {
+            return res.status(400).json({ Message: "Seleccione un País válido." });
+        }
+        const resultado = await resolverProveedorCfoPorPersona(proveedorPersonaId, pais.tenantId);
+        if (resultado.error) {
+            return res.status(404).json(resultado);
+        }
+        return res.json(resultado);
+    } catch (error) {
+        console.error("Error en docProvisionalProveedorEnCfo:", error);
+        return res.status(500).json({ Message: "Error al resolver el Proveedor en CFO", Error: error.message });
+    }
+});
+
+app.post('/crearDocumentoProvisionalPostFacturacion', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const {
+            ReferenciaOperativa, PaisKey, Moneda, Observacion, DuenoDocumento,
+            ProveedorPersonaId, MaterialProveedorId, Cantidad, PrecioVenta, Impuesto, CreatedBy
+        } = req.body;
+
+        const referenciaTrim = (ReferenciaOperativa || "").trim();
+        const observacionTrim = (Observacion || "").trim();
+        const pais = PAISES_DOCUMENTO_POST_FACTURACION[PaisKey];
+        const cantidadNum = Number(Cantidad);
+        const precioVentaNum = Number(PrecioVenta);
+        const impuestoNum = Number(Impuesto);
+
+        if (!referenciaTrim) return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        if (!pais) return res.status(400).json({ Message: "Seleccione un País válido." });
+        if (!MONEDAS_DOCUMENTO_POST_FACTURACION[Moneda]) return res.status(400).json({ Message: "Seleccione una Moneda válida." });
+        if (!observacionTrim) return res.status(400).json({ Message: "La Observación es requerida." });
+        if (!DUENOS_DOCUMENTO[DuenoDocumento]) return res.status(400).json({ Message: "Seleccione el Dueño del Documento." });
+        if (!ProveedorPersonaId) return res.status(400).json({ Message: "Seleccione un Proveedor." });
+        if (!MaterialProveedorId) return res.status(400).json({ Message: "Seleccione un Material." });
+        if (!Number.isInteger(cantidadNum) || cantidadNum < 1 || cantidadNum > 10) {
+            return res.status(400).json({ Message: "La Cantidad debe ser un número entero entre 1 y 10." });
+        }
+        if (!Number.isFinite(precioVentaNum) || precioVentaNum < 0) return res.status(400).json({ Message: "El Precio de Venta debe ser un número válido." });
+        if (!Number.isFinite(impuestoNum) || impuestoNum < 0) return res.status(400).json({ Message: "El Impuesto debe ser un número válido." });
+        if (!CreatedBy) return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+
+        // Se vuelve a resolver Cliente y Proveedor (no se confía en lo que ya se resolvió en
+        // pantalla) por si algo cambió entre que se buscó y que se dio "Crear".
+        const [datosCliente, datosProveedor] = await Promise.all([
+            resolverClienteCfoPorReferencia(referenciaTrim, pais.tenantId),
+            resolverProveedorCfoPorPersona(ProveedorPersonaId, pais.tenantId)
+        ]);
+        if (datosCliente.error) return res.status(404).json(datosCliente);
+        if (datosProveedor.error) return res.status(404).json(datosProveedor);
+
+        const materialValido = datosProveedor.Materiales.some((m) => String(m.Id).toUpperCase() === String(MaterialProveedorId).toUpperCase());
+        if (!materialValido) {
+            return res.status(400).json({ Message: "El Material seleccionado no pertenece a este Proveedor. Vuelva a seleccionarlo." });
+        }
+
+        const total = Math.round((precioVentaNum + impuestoNum) * 100) / 100;
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/DocumentoProvisional/CreateMany", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                DocumentoProvisionales: [{
+                    ReferenciaOperativa: referenciaTrim,
+                    Moneda: Number(Moneda),
+                    Observacion: observacionTrim,
+                    PaisId: pais.paisId,
+                    DueñoDocumento: Number(DuenoDocumento),
+                    Division: pais.division,
+                    ProveedorId: datosProveedor.ProveedorId,
+                    ClienteId: datosCliente.ClienteId,
+                    CreatedBy,
+                    DocumentoProvisionalDetalles: [{
+                        Cantidad: cantidadNum,
+                        PrecioVenta: precioVentaNum,
+                        Impuesto: impuestoNum,
+                        Total: total,
+                        MaterialProveedorId
+                    }],
+                    TenantId: pais.tenantId
+                }],
+                ContextoId: pais.tenantId,
+                SolicitanteDocumentoId: CreatedBy
+            })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`DocumentoProvisional/CreateMany → HTTP ${resp.status} para ${referenciaTrim}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`DocumentoProvisional/CreateMany → ${referenciaTrim}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearDocumentosPostFacturacion",
+            moduloLabel: "Crear Documentos (Post Facturación)",
+            accion: `Creó Documento Provisional (${pais.label})`,
+            referencia: referenciaTrim
+        });
+
+        return res.status(200).json({ Message: "Documento Provisional creado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearDocumentoProvisionalPostFacturacion:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Elimina un Documento (Provisional/Fiscal/Interno) recién creado desde este mismo módulo, sin
+// tener que ir al módulo Eliminar Documento — misma llamada externa que usa ese módulo
+// (Documento/DCUpdateISDCreated, o el de DocumentoFiscalLiquidacion según Discriminator), pero
+// bajo el permiso propio de este módulo, para que "deshacer" no dependa de tener también acceso
+// a Eliminar Documento.
+app.post('/docProvisionalEliminarCreado', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const { DocumentoId, ModifiedBy, Observacion } = req.body;
+
+        if (!DocumentoId) {
+            return res.status(400).json({ Message: "El documento es requerido." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+        if (!Observacion || !Observacion.trim()) {
+            return res.status(400).json({ Message: "Debe indicar el motivo de la eliminación." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const validacion = await pool.request()
+            .input('documentoId', sql.UniqueIdentifier, DocumentoId)
+            .query(`
+                SELECT [IsSoftDeleted], [Discriminator], [ReferenciaOperativa]
+                FROM [dbo].[Documento]
+                WHERE [Id] = @documentoId
+            `);
+
+        if (validacion.recordset.length === 0) {
+            return res.status(404).json({ Message: "No se encontró el documento." });
+        }
+
+        const { IsSoftDeleted, Discriminator, ReferenciaOperativa: referenciaOperativa } = validacion.recordset[0];
+
+        if (IsSoftDeleted) {
+            return res.status(400).json({ Message: "El documento ya fue eliminado." });
+        }
+
+        const esFiscalLiquidacion = Discriminator === 'DocumentoFiscalLiquidacion';
+        const urlEliminar = esFiscalLiquidacion
+            ? "https://cfows.azurewebsites.net/api/DocumentoFiscalLiquidacion/DCUpdateISDCreatedFiscal"
+            : "https://cfows.azurewebsites.net/api/Documento/DCUpdateISDCreated";
+
+        const resp = await fetch(urlEliminar, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ Id: DocumentoId, ModifiedBy, Observacion, EnviarCorreo: true })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`${urlEliminar} → HTTP ${resp.status} para ${DocumentoId}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`${urlEliminar} → ${DocumentoId}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearDocumentosPostFacturacion",
+            moduloLabel: "Crear Documentos (Post Facturación)",
+            accion: "Eliminó Documento recién creado (creado por error)",
+            referencia: referenciaOperativa || DocumentoId,
+            motivo: Observacion
+        });
+
+        return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en docProvisionalEliminarCreado:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 export default app;

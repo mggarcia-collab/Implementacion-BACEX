@@ -67,6 +67,9 @@ function AppShell() {
   // de la primera área.
   const [activeArea, setActiveArea] = useState(null);
   const [activeModule, setActiveModule] = useState(null);
+  // Datos opcionales que un módulo le pasa a otro al navegar (ej. una Referencia Operativa
+  // ya conocida, para que el destino la busque solo en vez de que el usuario la reescriba).
+  const [navParams, setNavParams] = useState(null);
   const [expandedAreas, setExpandedAreas] = useState(() => new Set());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // Qué área quedó "abierta" dentro de las tarjetas de acceso directo de Inicio,
@@ -88,10 +91,11 @@ function AppShell() {
     setExpandedAreas((prev) => new Set(prev).add(areaKey));
   };
 
-  const handleSelectModule = (areaKey, moduloKey) => {
+  const handleSelectModule = (areaKey, moduloKey, params = null) => {
     setActiveArea(areaKey);
     setActiveModule(moduloKey);
     setExpandedAreas((prev) => new Set(prev).add(areaKey));
+    setNavParams(params);
   };
 
   const handleExitModule = () => {
@@ -341,7 +345,7 @@ function AppShell() {
                 </div>
 
                 <div style={{ position: "relative", zIndex: 1 }}>
-                  <ActiveComponent onNavigate={handleSelectModule} />
+                  <ActiveComponent onNavigate={handleSelectModule} navParams={navParams} />
                 </div>
               </div>
             </>

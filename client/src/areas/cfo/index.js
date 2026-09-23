@@ -9,6 +9,8 @@ import DocumentoProvisionalNic, { meta as docProvisionalNicMeta } from "./Docume
 import AnulacionFacturas, { meta as anulacionFacturasMeta } from "./AnulacionFacturas.jsx";
 import Cuadrilla, { meta as cuadrillaMeta } from "./Cuadrilla.jsx";
 import CrearProveedorCliente, { meta as crearProveedorClienteMeta } from "./CrearProveedorCliente.jsx";
+import EliminarModificarLineaMaterial, { meta as eliminarModificarLineaMaterialMeta } from "./EliminarModificarLineaMaterial.jsx";
+import CrearDocumentosPostFacturacion, { meta as crearDocumentosPostFacturacionMeta } from "./CrearDocumentosPostFacturacion.jsx";
 
 export const label = "CFO / Finanzas";
 export const icon = "📊";
@@ -25,12 +27,14 @@ export const modules = {
   anulacionFacturas: { ...anulacionFacturasMeta, Component: AnulacionFacturas },
   cuadrilla: { ...cuadrillaMeta, Component: Cuadrilla },
   crearProveedorCliente: { ...crearProveedorClienteMeta, Component: CrearProveedorCliente },
+  eliminarModificarLineaMaterial: { ...eliminarModificarLineaMaterialMeta, Component: EliminarModificarLineaMaterial },
+  crearDocumentosPostFacturacion: { ...crearDocumentosPostFacturacionMeta, Component: CrearDocumentosPostFacturacion },
 };
 
 // Agrupa los módulos de CFO en el sidebar para que no se vean como una lista plana larga.
 export const groups = [
   { label: "Gestión", modules: ["negociaciones", "cambio", "salesorder"] },
-  { label: "Documentos", modules: ["habDoc", "redondeo", "docProvisionalNic", "cuadrilla"] },
-  { label: "Eliminación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas"] },
+  { label: "Documentos", modules: ["habDoc", "redondeo", "docProvisionalNic", "cuadrilla", "crearDocumentosPostFacturacion"] },
+  { label: "Eliminación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas", "eliminarModificarLineaMaterial"] },
   { label: "Catálogos", modules: ["crearProveedorCliente"] },
 ];

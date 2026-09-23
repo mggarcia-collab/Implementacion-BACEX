@@ -30,7 +30,7 @@ function classify(ok, message) {
   if (ok) return "success";
   const msg = (message || "").toLowerCase();
   if (msg.includes("no se encontró")) return "notfound";
-  if (msg.includes("facturada")) return "blocked";
+  if (msg.includes("facturada") || msg.includes("eliminada")) return "blocked";
   if (msg.includes("ya se encuentra habilitada")) return "already";
   return "error";
 }
@@ -135,7 +135,9 @@ export default function SalesOrder({ onNavigate }) {
 
     setLoading(true);
     setSoResults([]);
+    const resultados = [];
     for (const referencia of listaOrders) {
+      let resultado;
       try {
         const response = await apiFetch(`/habilitarSalesOrder`, {
           method: "POST",
@@ -144,13 +146,20 @@ export default function SalesOrder({ onNavigate }) {
         });
         const data = await response.json().catch(() => null);
         const message = data?.Message || (response.ok ? "Procesado correctamente" : `Error ${response.status}`);
-        setSoResults((prev) => [...prev, { referencia, message, kind: classify(response.ok, message) }]);
+        resultado = { referencia, message, kind: classify(response.ok, message) };
       } catch (error) {
-        setSoResults((prev) => [...prev, { referencia, message: "Error de conexión con el servidor", kind: "error" }]);
+        resultado = { referencia, message: "Error de conexión con el servidor", kind: "error" };
       }
+      resultados.push(resultado);
+      setSoResults((prev) => [...prev, resultado]);
     }
     setLoading(false);
-    showToast("✓ Procesamiento finalizado", "ok");
+    const huboError = resultados.some((r) => r.kind !== "success" && r.kind !== "already");
+    if (huboError) {
+      showToast("⚠️ Procesamiento finalizado con incidencias, revise el detalle", "warn");
+    } else {
+      showToast("✓ Procesamiento finalizado", "ok");
+    }
 
     // Refresca Aduana y Sello con el estado recién actualizado, para no tener
     // que darle clic aparte a "Aduana y Sello" después de habilitar.

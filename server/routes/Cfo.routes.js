@@ -124,7 +124,7 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
         const validacion = await pool.request()
             .input('referencia', sql.VarChar, ReferenciaOperativa)
             .query(`
-                SELECT [Status_Value]
+                SELECT [Status_Value], [IsSoftDeleted]
                 FROM [dbo].[SalesOrder]
                 WHERE [ReferenciaOperativa] = @referencia
             `);
@@ -133,9 +133,12 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
             return res.status(404).json({ Message: "No se encontró la Sales Order." });
         }
 
-        const status = validacion.recordset[0].Status_Value;
+        const { Status_Value: status, IsSoftDeleted: eliminada } = validacion.recordset[0];
 
-        // 2. Aplicar regla de negocio (Solo permitir si el Status_Value es 1)
+        // 2. Aplicar regla de negocio (IsSoftDeleted: 0 = activa, 1 = eliminada)
+        if (eliminada) {
+            return res.status(400).json({ Message: "La Sales Order está eliminada y no se puede habilitar." });
+        }
         if (status === 2) {
             return res.status(400).json({ Message: "La Sales Order ya se encuentra habilitada." });
         }

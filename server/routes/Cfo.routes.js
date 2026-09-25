@@ -4757,6 +4757,245 @@ app.post('/crearDocumentoProvisionalPostFacturacion', requirePermission('cfo', '
     }
 });
 
+// Segunda parte del módulo: Documentos Fiscales (api/DocumentoFiscal/CreateMany). Mismo
+// Cliente/Proveedor/País/Tenant que Provisionales (mismas funciones resolverClienteCfoPorReferencia
+// / resolverProveedorCfoPorPersona); lo que cambia es el endpoint externo, el nombre del arreglo
+// de detalle (DocumentoFiscalDetalles) y los campos propios de Fiscal: FechaEmision,
+// FechaVencimiento y NumeroDocumentoFiscal (obligatorios) y CAI (opcional — no todos los
+// documentos fiscales tienen CAI asignado).
+app.post('/crearDocumentoFiscalPostFacturacion', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const {
+            ReferenciaOperativa, PaisKey, Moneda, Observacion, DuenoDocumento,
+            ProveedorPersonaId, MaterialProveedorId, Cantidad, PrecioVenta, Impuesto,
+            FechaEmision, FechaVencimiento, CAI, NumeroDocumentoFiscal, CreatedBy
+        } = req.body;
+
+        const referenciaTrim = (ReferenciaOperativa || "").trim();
+        const observacionTrim = (Observacion || "").trim();
+        const caiTrim = (CAI || "").trim();
+        const numeroDocumentoFiscalTrim = (NumeroDocumentoFiscal || "").trim();
+        const pais = PAISES_DOCUMENTO_POST_FACTURACION[PaisKey];
+        const cantidadNum = Number(Cantidad);
+        const precioVentaNum = Number(PrecioVenta);
+        const impuestoNum = Number(Impuesto);
+
+        if (!referenciaTrim) return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        if (!pais) return res.status(400).json({ Message: "Seleccione un País válido." });
+        if (!MONEDAS_DOCUMENTO_POST_FACTURACION[Moneda]) return res.status(400).json({ Message: "Seleccione una Moneda válida." });
+        if (!observacionTrim) return res.status(400).json({ Message: "La Observación es requerida." });
+        if (!DUENOS_DOCUMENTO[DuenoDocumento]) return res.status(400).json({ Message: "Seleccione el Dueño del Documento." });
+        if (!ProveedorPersonaId) return res.status(400).json({ Message: "Seleccione un Proveedor." });
+        if (!MaterialProveedorId) return res.status(400).json({ Message: "Seleccione un Material." });
+        if (!Number.isInteger(cantidadNum) || cantidadNum < 1 || cantidadNum > 10) {
+            return res.status(400).json({ Message: "La Cantidad debe ser un número entero entre 1 y 10." });
+        }
+        if (!Number.isFinite(precioVentaNum) || precioVentaNum < 0) return res.status(400).json({ Message: "El Precio de Venta debe ser un número válido." });
+        if (!Number.isFinite(impuestoNum) || impuestoNum < 0) return res.status(400).json({ Message: "El Impuesto debe ser un número válido." });
+        if (!FechaEmision) return res.status(400).json({ Message: "La Fecha de Emisión es requerida." });
+        if (!FechaVencimiento) return res.status(400).json({ Message: "La Fecha de Vencimiento es requerida." });
+        if (!numeroDocumentoFiscalTrim) return res.status(400).json({ Message: "El Número de Documento Fiscal es requerido." });
+        if (!CreatedBy) return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+
+        // Se vuelve a resolver Cliente y Proveedor (no se confía en lo que ya se resolvió en
+        // pantalla) por si algo cambió entre que se buscó y que se dio "Crear".
+        const [datosCliente, datosProveedor] = await Promise.all([
+            resolverClienteCfoPorReferencia(referenciaTrim, pais.tenantId),
+            resolverProveedorCfoPorPersona(ProveedorPersonaId, pais.tenantId)
+        ]);
+        if (datosCliente.error) return res.status(404).json(datosCliente);
+        if (datosProveedor.error) return res.status(404).json(datosProveedor);
+
+        const materialValido = datosProveedor.Materiales.some((m) => String(m.Id).toUpperCase() === String(MaterialProveedorId).toUpperCase());
+        if (!materialValido) {
+            return res.status(400).json({ Message: "El Material seleccionado no pertenece a este Proveedor. Vuelva a seleccionarlo." });
+        }
+
+        const total = Math.round((precioVentaNum + impuestoNum) * 100) / 100;
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/DocumentoFiscal/CreateMany", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                Documentos: [{
+                    ReferenciaOperativa: referenciaTrim,
+                    Moneda: Number(Moneda),
+                    Observacion: observacionTrim,
+                    PaisId: pais.paisId,
+                    DueñoDocumento: Number(DuenoDocumento),
+                    Division: pais.division,
+                    ProveedorId: datosProveedor.ProveedorId,
+                    ClienteId: datosCliente.ClienteId,
+                    CreatedBy,
+                    DocumentoFiscalDetalles: [{
+                        Cantidad: cantidadNum,
+                        PrecioVenta: precioVentaNum,
+                        Impuesto: impuestoNum,
+                        Total: total,
+                        MaterialProveedorId
+                    }],
+                    FechaEmision,
+                    FechaVencimiento,
+                    TenantId: pais.tenantId,
+                    CAI: caiTrim || null,
+                    NumeroDocumentoFiscal: numeroDocumentoFiscalTrim
+                }],
+                ContextoId: pais.tenantId,
+                SolicitanteDocumentoId: CreatedBy
+            })
+        });
+
+        // A diferencia de los demás endpoints de este módulo, DocumentoFiscal/CreateMany no usa
+        // "IsValid" de forma confiable para indicar éxito/error (se confirmó contra un caso real:
+        // devolvió IsValid:false, HTTP 200 y el documento ya creado dentro de "Message" — tratarlo
+        // como error habría hecho que el usuario reintentara y duplicara el documento). Tampoco usa
+        // el HTTP status de forma confiable para errores de negocio (ej. "No existe cliente" llega
+        // como HTTP 400 pero con un body JSON completo). Lo único confiable es "Exception": si viene
+        // con contenido, sí falló; si viene null, se creó el documento aunque IsValid diga false.
+        const rawBody = await resp.text();
+        let data = null;
+        try { data = JSON.parse(rawBody); } catch { /* body no es JSON */ }
+
+        console.log(`DocumentoFiscal/CreateMany → ${referenciaTrim}: HTTP ${resp.status}`, rawBody);
+
+        if (!data) {
+            console.error(`DocumentoFiscal/CreateMany → respuesta no-JSON para ${referenciaTrim}:`, rawBody);
+            return res.status(resp.status || 500).json({ Message: "Error al comunicarse con el servicio externo", Detail: rawBody });
+        }
+
+        if (data.Exception) {
+            return res.status(400).json({ Message: data.Exception.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearDocumentosPostFacturacion",
+            moduloLabel: "Crear Documentos (Post Facturación)",
+            accion: `Creó Documento Fiscal (${pais.label})`,
+            referencia: referenciaTrim
+        });
+
+        return res.status(200).json({ Message: "Documento Fiscal creado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearDocumentoFiscalPostFacturacion:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Tercera parte del módulo: Documentos Internos (api/DocumentoInterno/CreateMany). Mismo
+// Cliente/Proveedor/País/Tenant que Provisionales y Fiscales, pero a diferencia de esos dos,
+// el contrato de este endpoint NO lleva DueñoDocumento ni Division, y el body tampoco lleva
+// SolicitanteDocumentoId a nivel raíz (confirmado contra el JSON de ejemplo real). La
+// Observación aquí es un motivo de negocio que escribe el usuario (ej. "proveedor no está
+// constituido"), no el nombre del material como en Provisional/Fiscal.
+app.post('/crearDocumentoInternoPostFacturacion', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const {
+            ReferenciaOperativa, PaisKey, Moneda, Observacion,
+            ProveedorPersonaId, MaterialProveedorId, Cantidad, PrecioVenta, Impuesto, CreatedBy
+        } = req.body;
+
+        const referenciaTrim = (ReferenciaOperativa || "").trim();
+        const observacionTrim = (Observacion || "").trim();
+        const pais = PAISES_DOCUMENTO_POST_FACTURACION[PaisKey];
+        const cantidadNum = Number(Cantidad);
+        const precioVentaNum = Number(PrecioVenta);
+        const impuestoNum = Number(Impuesto);
+
+        if (!referenciaTrim) return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        if (!pais) return res.status(400).json({ Message: "Seleccione un País válido." });
+        if (!MONEDAS_DOCUMENTO_POST_FACTURACION[Moneda]) return res.status(400).json({ Message: "Seleccione una Moneda válida." });
+        if (!observacionTrim) return res.status(400).json({ Message: "La Observación es requerida." });
+        if (!ProveedorPersonaId) return res.status(400).json({ Message: "Seleccione un Proveedor." });
+        if (!MaterialProveedorId) return res.status(400).json({ Message: "Seleccione un Material." });
+        if (!Number.isInteger(cantidadNum) || cantidadNum < 1 || cantidadNum > 10) {
+            return res.status(400).json({ Message: "La Cantidad debe ser un número entero entre 1 y 10." });
+        }
+        if (!Number.isFinite(precioVentaNum) || precioVentaNum < 0) return res.status(400).json({ Message: "El Precio de Venta debe ser un número válido." });
+        if (!Number.isFinite(impuestoNum) || impuestoNum < 0) return res.status(400).json({ Message: "El Impuesto debe ser un número válido." });
+        if (!CreatedBy) return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
+
+        // Se vuelve a resolver Cliente y Proveedor (no se confía en lo que ya se resolvió en
+        // pantalla) por si algo cambió entre que se buscó y que se dio "Crear".
+        const [datosCliente, datosProveedor] = await Promise.all([
+            resolverClienteCfoPorReferencia(referenciaTrim, pais.tenantId),
+            resolverProveedorCfoPorPersona(ProveedorPersonaId, pais.tenantId)
+        ]);
+        if (datosCliente.error) return res.status(404).json(datosCliente);
+        if (datosProveedor.error) return res.status(404).json(datosProveedor);
+
+        const materialValido = datosProveedor.Materiales.some((m) => String(m.Id).toUpperCase() === String(MaterialProveedorId).toUpperCase());
+        if (!materialValido) {
+            return res.status(400).json({ Message: "El Material seleccionado no pertenece a este Proveedor. Vuelva a seleccionarlo." });
+        }
+
+        const total = Math.round((precioVentaNum + impuestoNum) * 100) / 100;
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/DocumentoInterno/CreateMany", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                Documentos: [{
+                    ReferenciaOperativa: referenciaTrim,
+                    Moneda: Number(Moneda),
+                    Observacion: observacionTrim,
+                    PaisId: pais.paisId,
+                    ProveedorId: datosProveedor.ProveedorId,
+                    ClienteId: datosCliente.ClienteId,
+                    CreatedBy,
+                    TenantId: pais.tenantId,
+                    DocumentoDetalles: [{
+                        Cantidad: cantidadNum,
+                        PrecioVenta: precioVentaNum,
+                        Impuesto: impuestoNum,
+                        Total: total,
+                        MaterialProveedorId
+                    }]
+                }],
+                ContextoId: pais.tenantId
+            })
+        });
+
+        // Mismo cuidado que en DocumentoFiscal/CreateMany: no confiar en "IsValid" ni en el HTTP
+        // status para decidir éxito/error — solo "Exception" es confiable.
+        const rawBody = await resp.text();
+        let data = null;
+        try { data = JSON.parse(rawBody); } catch { /* body no es JSON */ }
+
+        console.log(`DocumentoInterno/CreateMany → ${referenciaTrim}: HTTP ${resp.status}`, rawBody);
+
+        if (!data) {
+            console.error(`DocumentoInterno/CreateMany → respuesta no-JSON para ${referenciaTrim}:`, rawBody);
+            return res.status(resp.status || 500).json({ Message: "Error al comunicarse con el servicio externo", Detail: rawBody });
+        }
+
+        if (data.Exception) {
+            return res.status(400).json({ Message: data.Exception.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearDocumentosPostFacturacion",
+            moduloLabel: "Crear Documentos (Post Facturación)",
+            accion: `Creó Documento Interno (${pais.label})`,
+            referencia: referenciaTrim
+        });
+
+        return res.status(200).json({ Message: "Documento Interno creado con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearDocumentoInternoPostFacturacion:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 // Elimina un Documento (Provisional/Fiscal/Interno) recién creado desde este mismo módulo, sin
 // tener que ir al módulo Eliminar Documento — misma llamada externa que usa ese módulo
 // (Documento/DCUpdateISDCreated, o el de DocumentoFiscalLiquidacion según Discriminator), pero

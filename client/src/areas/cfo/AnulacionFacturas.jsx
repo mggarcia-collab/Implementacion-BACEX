@@ -64,6 +64,9 @@ export default function AnulacionFacturas() {
 
   const [referenciasTexto, setReferenciasTexto] = useState("");
   const [facturaBusqueda, setFacturaBusqueda] = useState("");
+  const [facturaManual, setFacturaManual] = useState("");
+  const [agregandoManual, setAgregandoManual] = useState(false);
+  const [avisoManual, setAvisoManual] = useState([]);
   const [buscando, setBuscando] = useState(false);
   const [buscado, setBuscado] = useState(false);
   const [facturasEncontradas, setFacturasEncontradas] = useState([]);
@@ -241,6 +244,67 @@ export default function AnulacionFacturas() {
     setFacturasSeleccionadas((prev) => prev.filter((f) => f !== factura));
   };
 
+  // Algunas facturas no tienen fila en RegistroContable ligada por SalesOrder/Documento (se
+  // confirmó con casos reales), así que la búsqueda de arriba nunca las va a encontrar aunque
+  // sí existan y Azure sí las pueda anular (HabilitarParaRefacturacion solo necesita el número).
+  // Esta es la salida manual para esos casos. Antes de agregarlas se consulta su estado real
+  // (por si el sistema sí las conoce, solo que no aparecieron en la búsqueda por otro motivo):
+  // si ya están anuladas, no se agregan — se avisa quién y cuándo, igual que el botón
+  // "Agregar" ya deshabilitado de la tabla de resultados de arriba.
+  const handleAgregarManual = async () => {
+    const ingresadas = facturaManual.split(/[,\s\n]+/).map((f) => f.trim()).filter(Boolean);
+    if (ingresadas.length === 0) {
+      showToast("Ingrese al menos un número de factura", "warn");
+      return;
+    }
+    const analizadas = ingresadas.map(normalizarFactura);
+    const invalidas = analizadas.filter((a) => !a.valida);
+    if (invalidas.length > 0) {
+      showToast(`Factura(s) inválida(s): ${invalidas.map((a) => `${a.factura} (${a.motivo})`).join("; ")}`, "warn");
+      return;
+    }
+    const nuevas = analizadas.map((a) => a.corregida || a.factura);
+
+    setAgregandoManual(true);
+    setAvisoManual([]);
+    let encontradas = [];
+    try {
+      const resp = await apiFetch(`/facturasPorNumero`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ facturas: nuevas })
+      });
+      const data = await resp.json().catch(() => null);
+      encontradas = resp.ok && Array.isArray(data) ? data : [];
+    } catch (error) {
+      // Si falla la verificación, se sigue permitiendo agregar (mejor eso que bloquear al
+      // usuario por un problema de red) — simplemente no se puede avisar si ya estaba anulada.
+    }
+
+    const yaAnuladas = nuevas
+      .map((factura) => ({ factura, info: encontradas.find((e) => e.NumeroFacturaSap === factura && e.Estado === "Anulada") }))
+      .filter((f) => f.info);
+
+    if (yaAnuladas.length > 0) {
+      setAvisoManual(yaAnuladas.map(({ factura, info }) =>
+        `${factura} ya fue anulada por ${info.AnuladoPor || "usuario no identificado"}${info.AnuladoFecha ? ` el ${formatearFechaAnulacion(info.AnuladoFecha)}` : ""} — no se agregó.`
+      ));
+    }
+
+    const porAgregar = nuevas.filter((f) => !yaAnuladas.some((a) => a.factura === f));
+    if (porAgregar.length > 0) {
+      setFacturasSeleccionadas((prev) => {
+        const combinadas = [...prev];
+        for (const factura of porAgregar) {
+          if (!combinadas.includes(factura)) combinadas.push(factura);
+        }
+        return combinadas;
+      });
+    }
+    setFacturaManual("");
+    setAgregandoManual(false);
+  };
+
   const handleAnular = async (e) => {
     e.preventDefault();
 
@@ -367,6 +431,36 @@ export default function AnulacionFacturas() {
           <button type="button" className="btn ghost" onClick={handleLimpiar} disabled={buscando || enviando} style={{ padding: "6px 20px", fontSize: "13px" }}>
             Limpiar
           </button>
+        </div>
+
+        <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px dashed #dcdfe6" }}>
+          <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "4px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Agregar factura manualmente
+          </label>
+          <div style={{ fontSize: "12px", color: "#a3acb9", marginBottom: "8px" }}>
+            Úsalo si la búsqueda de arriba no encuentra la factura (puede pasar si no tiene fila ligada en RegistroContable). Antes de agregarla se revisa si el sistema la reconoce como ya anulada; si no se puede verificar, se agrega igual.
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <input
+              type="text"
+              placeholder="Uno o varios números de factura..."
+              value={facturaManual}
+              onChange={(e) => setFacturaManual(e.target.value)}
+              disabled={agregandoManual}
+              style={{ flex: 1, padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+            />
+            <button type="button" className="btn soft" onClick={handleAgregarManual} disabled={agregandoManual} style={{ padding: "0 16px" }}>
+              {agregandoManual ? "Verificando..." : "Agregar"}
+            </button>
+          </div>
+          {avisoManual.length > 0 && (
+            <div style={{
+              background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
+              padding: "10px 14px", marginTop: "10px", color: "#9a3412", fontSize: "13px"
+            }}>
+              {avisoManual.map((linea, i) => <div key={i}>⚠️ {linea}</div>)}
+            </div>
+          )}
         </div>
 
         {buscado && facturasEncontradas.length === 0 && (

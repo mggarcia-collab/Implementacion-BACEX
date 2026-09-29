@@ -1283,6 +1283,20 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             request.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
+        // Tal cual lo escribió el usuario (sin quitar guiones): así como se busca por
+        // Referencia Operativa, se busca la misma caja de texto contra AsignacionFactura —
+        // cubre las facturas que en vez de Referencia Operativa tienen una Asignación de
+        // Factura (no ligan a SalesOrder ni Documento, así que las dos consultas de arriba
+        // nunca las encuentran). Solo se filtra por AsignacionFactura (no por
+        // RC.ReferenciaOperativa, que en este caso trae el mismo valor de todos modos):
+        // se probó contra la tabla real y ReferenciaOperativa no está indexada ahí (~9s por
+        // valor, y con OR contra AsignacionFactura sube a ~24s); AsignacionFactura sí lo está
+        // (<1s).
+        const parametrosDirecto = listaReferencias.map((valor, i) => {
+            const nombre = `refD${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
 
         const resultado = await request.query(`
             SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
@@ -1313,9 +1327,15 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             INNER JOIN dbo.RegistroContable RC ON RC.Id = D.RegistroContableFacturaId
             WHERE D.ReferenciaOperativa IN (${parametrosResueltos.join(", ")})
               AND RC.IsSoftDeleted = 1
+
+            SELECT 'Fiscal (Asignación de Factura)' AS Tipo, RC.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
+            FROM dbo.RegistroContable RC
+            WHERE RC.AsignacionFactura IN (${parametrosDirecto.join(", ")})
+              AND NOT EXISTS (SELECT 1 FROM dbo.SalesOrder SO2 WHERE SO2.RegistroContableId = RC.Id)
+              AND NOT EXISTS (SELECT 1 FROM dbo.Documento D2 WHERE D2.RegistroContableFacturaId = RC.Id)
         `);
 
-        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || []), ...(resultado.recordsets[3] || [])];
+        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || []), ...(resultado.recordsets[3] || []), ...(resultado.recordsets[4] || [])];
         const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
         const facturas = crudas.map((f) => ({
             Tipo: f.Tipo,
@@ -1367,9 +1387,19 @@ app.post('/facturasPorNumero', requirePermission('cfo', 'anulacionFacturas'), as
             FROM dbo.Documento D
             INNER JOIN dbo.RegistroContable RC ON RC.Id = D.RegistroContableFacturaId
             WHERE RC.NumeroFacturaSap IN (${parametros.join(", ")})
+
+            -- Facturas que en vez de Referencia Operativa tienen una Asignación de Factura
+            -- (confirmado con un caso real: RC.ReferenciaOperativa = RC.AsignacionFactura, sin
+            -- fila ligada en SalesOrder ni Documento) — sin esto, esas facturas nunca aparecían
+            -- en la búsqueda aunque sí existan y Azure sí las pueda anular.
+            SELECT 'Fiscal (Asignación de Factura)' AS Tipo, RC.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
+            FROM dbo.RegistroContable RC
+            WHERE RC.NumeroFacturaSap IN (${parametros.join(", ")})
+              AND NOT EXISTS (SELECT 1 FROM dbo.SalesOrder SO2 WHERE SO2.RegistroContableId = RC.Id)
+              AND NOT EXISTS (SELECT 1 FROM dbo.Documento D2 WHERE D2.RegistroContableFacturaId = RC.Id)
         `);
 
-        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || [])];
+        const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || [])];
         const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
         const resultados = crudas.map((f) => ({
             Tipo: f.Tipo,
@@ -5074,6 +5104,168 @@ app.post('/docProvisionalEliminarCreado', requirePermission('cfo', 'crearDocumen
 
     } catch (error) {
         console.error("Error en docProvisionalEliminarCreado:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
+// Módulo Crear Especie Fiscal (api/SolicitudEspecieFiscal/Create). A diferencia de Provisional/
+// Fiscal/Interno, aquí el ClienteId que se manda es directamente HojaRuta.ClienteId (NO se
+// vuelve a resolver contra CfoNetCore.dbo.Cliente) y el AduanaId sale de la misma fila de
+// HojaRuta — ambos confirmados con el usuario. El Tenant es siempre el mismo (Honduras) sin
+// importar el país de la Referencia Operativa, así que no hay selector de País en este módulo.
+const ESPECIES_FISCALES = {
+    "1AA7D461-9CE7-42FF-85CE-15F033E6394D": "Sello de Botella",
+    "AC1D4799-DE87-4ADD-8354-15F033FF8170": "Sello Plástico",
+    "BC478EE0-C7C1-46EE-A880-14D3AA4788C5": "Marchamo Internacional",
+    "BEF0D50A-EC1B-419E-9186-1610A396B181": "DUA / Poliza",
+    "E2A7BDBA-D759-42E1-83FC-177148C81768": "Declaración BCH",
+    "EA62F20C-552C-49B5-B497-1E1D71C5DC0C": "Marchamos de Uso Aduanero",
+    "7D951863-A3BC-4188-ACD9-24E82EA20CEE": "Marchamo Nacional $",
+    "B6A4CF72-E9F2-4B74-B4AF-2430D1AED16E": "Poliza $",
+};
+
+async function resolverClienteAduanaPorReferencia(referencia) {
+    const pool = await conexion(BasesDeDatos.HojaDeRuta);
+    const result = await pool.request()
+        .input('referencia', sql.VarChar, referencia)
+        .query(`SELECT TOP 1 ClienteId, ClienteDescripcion, AduanaId, AduanaDescripcion FROM HojaRuta WHERE NumeroHojaRuta = @referencia`);
+    const fila = result.recordset[0];
+    if (!fila || !fila.ClienteId) {
+        return { error: "No existe Hoja de Ruta para esta Referencia Operativa.", NoExisteHojaRuta: true };
+    }
+    if (!fila.AduanaId) {
+        return { error: "Esta Referencia Operativa no tiene Aduana asignada en la Hoja de Ruta.", NoExisteHojaRuta: true };
+    }
+    return {
+        ClienteId: fila.ClienteId,
+        ClienteDescripcion: fila.ClienteDescripcion,
+        AduanaId: fila.AduanaId,
+        AduanaDescripcion: fila.AduanaDescripcion,
+    };
+}
+
+app.post('/especieFiscalDatosPorReferencia', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
+    try {
+        const referenciaTrim = (req.body.referencia || "").trim();
+        if (!referenciaTrim) {
+            return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        const resultado = await resolverClienteAduanaPorReferencia(referenciaTrim);
+        if (resultado.error) {
+            return res.status(404).json(resultado);
+        }
+        return res.json(resultado);
+    } catch (error) {
+        console.error("Error en especieFiscalDatosPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al resolver el Cliente/Aduana de la Referencia Operativa", Error: error.message });
+    }
+});
+
+// Búsqueda de Persona SIN filtrar por Discriminator (a diferencia de docProvisionalBuscarProveedores,
+// que solo busca Proveedores): aquí la persona puede ser cualquiera — típicamente un colaborador de
+// Vesta a cuyo nombre debe aparecer la Especie Fiscal en pantalla.
+app.post('/especieFiscalBuscarPersonas', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
+    try {
+        const nombreTrim = (req.body.nombre || "").trim();
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "Ingrese un nombre para buscar." });
+        }
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('nombre', sql.VarChar, `%${nombreTrim}%`)
+            .query(`
+                SELECT TOP 15
+                    Id AS PersonaId,
+                    -- "Nombre" normalmente ya trae nombre(s) + apellido(s), pero en algunos
+                    -- registros el Apellido queda por fuera; se agrega solo si no está ya
+                    -- incluido, para no duplicarlo ni mostrar un nombre incompleto.
+                    CASE
+                        WHEN Apellido IS NOT NULL AND LTRIM(RTRIM(Apellido)) <> ''
+                             AND CHARINDEX(UPPER(LTRIM(RTRIM(Apellido))), UPPER(Nombre)) = 0
+                        THEN Nombre + ' ' + Apellido
+                        ELSE Nombre
+                    END AS Nombre,
+                    IdFiscal
+                FROM [dbo].[Persona]
+                WHERE IsSoftDeleted = 0
+                  AND Nombre LIKE @nombre
+                ORDER BY Nombre
+            `);
+        return res.json(resultado.recordset);
+    } catch (error) {
+        console.error("Error en especieFiscalBuscarPersonas:", error);
+        return res.status(500).json({ Message: "Error al buscar Personas", Error: error.message });
+    }
+});
+
+app.post('/crearEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
+    try {
+        const { ReferenciaOperativa, Cantidad, CreatedBy, EspecieFiscalId, Observacion } = req.body;
+
+        const referenciaTrim = (ReferenciaOperativa || "").trim();
+        const observacionTrim = (Observacion || "").trim();
+        const cantidadNum = Number(Cantidad);
+        const especieFiscalIdUpper = String(EspecieFiscalId || "").toUpperCase();
+
+        if (!referenciaTrim) return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        if (!Number.isInteger(cantidadNum) || cantidadNum < 1) return res.status(400).json({ Message: "La Cantidad debe ser un número entero mayor o igual a 1." });
+        if (!CreatedBy) return res.status(400).json({ Message: "Seleccione a nombre de quién se crea la Especie Fiscal." });
+        if (!ESPECIES_FISCALES[especieFiscalIdUpper]) return res.status(400).json({ Message: "Seleccione una Especie Fiscal válida." });
+        if (!observacionTrim) return res.status(400).json({ Message: "La Observación es requerida." });
+
+        // Se vuelve a resolver Cliente/Aduana (no se confía en lo que ya se resolvió en pantalla)
+        // por si algo cambió entre que se buscó la Referencia y que se dio "Crear".
+        const datosReferencia = await resolverClienteAduanaPorReferencia(referenciaTrim);
+        if (datosReferencia.error) return res.status(404).json(datosReferencia);
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/SolicitudEspecieFiscal/Create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ReferenciaOperativa: referenciaTrim,
+                Cantidad: cantidadNum,
+                CreatedBy,
+                ClienteId: datosReferencia.ClienteId,
+                EspecieFiscalId,
+                Tipo: 1,
+                AduanaId: datosReferencia.AduanaId,
+                Observacion: observacionTrim,
+                TenantId: PAISES_DOCUMENTO_POST_FACTURACION.honduras.tenantId
+            })
+        });
+
+        // Mismo cuidado que en DocumentoFiscal/DocumentoInterno CreateMany: no confiar en
+        // "IsValid" ni en el HTTP status por sí solos — solo "Exception" es confiable.
+        const rawBody = await resp.text();
+        let data = null;
+        try { data = JSON.parse(rawBody); } catch { /* body no es JSON */ }
+
+        console.log(`SolicitudEspecieFiscal/Create → ${referenciaTrim}: HTTP ${resp.status}`, rawBody);
+
+        if (!data) {
+            console.error(`SolicitudEspecieFiscal/Create → respuesta no-JSON para ${referenciaTrim}:`, rawBody);
+            return res.status(resp.status || 500).json({ Message: "Error al comunicarse con el servicio externo", Detail: rawBody });
+        }
+
+        if (data.Exception) {
+            return res.status(400).json({ Message: data.Exception.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearEspecieFiscal",
+            moduloLabel: "Crear Especie Fiscal",
+            accion: `Creó Especie Fiscal (${ESPECIES_FISCALES[especieFiscalIdUpper]})`,
+            referencia: referenciaTrim
+        });
+
+        return res.status(200).json({ Message: "Especie Fiscal creada con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en crearEspecieFiscal:", error);
         return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
     }
 });

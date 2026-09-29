@@ -11,6 +11,7 @@ import Cuadrilla, { meta as cuadrillaMeta } from "./Cuadrilla.jsx";
 import CrearProveedorCliente, { meta as crearProveedorClienteMeta } from "./CrearProveedorCliente.jsx";
 import EliminarModificarLineaMaterial, { meta as eliminarModificarLineaMaterialMeta } from "./EliminarModificarLineaMaterial.jsx";
 import CrearDocumentosPostFacturacion, { meta as crearDocumentosPostFacturacionMeta } from "./CrearDocumentosPostFacturacion.jsx";
+import CrearEspecieFiscal, { meta as crearEspecieFiscalMeta } from "./CrearEspecieFiscal.jsx";
 
 export const label = "CFO / Finanzas";
 export const icon = "📊";
@@ -29,12 +30,13 @@ export const modules = {
   crearProveedorCliente: { ...crearProveedorClienteMeta, Component: CrearProveedorCliente },
   eliminarModificarLineaMaterial: { ...eliminarModificarLineaMaterialMeta, Component: EliminarModificarLineaMaterial },
   crearDocumentosPostFacturacion: { ...crearDocumentosPostFacturacionMeta, Component: CrearDocumentosPostFacturacion },
+  crearEspecieFiscal: { ...crearEspecieFiscalMeta, Component: CrearEspecieFiscal },
 };
 
 // Agrupa los módulos de CFO en el sidebar para que no se vean como una lista plana larga.
 export const groups = [
   { label: "Gestión", modules: ["negociaciones", "cambio", "salesorder"] },
-  { label: "Documentos", modules: ["habDoc", "redondeo", "docProvisionalNic", "cuadrilla", "crearDocumentosPostFacturacion"] },
+  { label: "Documentos", modules: ["habDoc", "redondeo", "docProvisionalNic", "cuadrilla", "crearDocumentosPostFacturacion", "crearEspecieFiscal"] },
   { label: "Eliminación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas", "eliminarModificarLineaMaterial"] },
   { label: "Catálogos", modules: ["crearProveedorCliente"] },
 ];

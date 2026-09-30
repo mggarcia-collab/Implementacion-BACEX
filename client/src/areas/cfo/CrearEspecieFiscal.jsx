@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useToast } from "../../components/Toast.jsx";
 import { apiFetch } from "../../apiClient.js";
+import { useAutorizadorActual } from "./useAutorizadorActual.js";
 
 export const meta = {
   label: "Crear Especie Fiscal",
@@ -57,7 +58,7 @@ const CAMPOS_RESUMEN = [
   { label: "Observación", rutas: ["Observacion", "Observación"] },
 ];
 
-export default function CrearEspecieFiscal() {
+function TabCrear({ onCreado }) {
   const [referencia, setReferencia] = useState("");
   const [buscandoReferencia, setBuscandoReferencia] = useState(false);
   const [datosReferencia, setDatosReferencia] = useState(null);
@@ -216,6 +217,7 @@ export default function CrearEspecieFiscal() {
       }
       showToast(data?.Message || "✓ Especie Fiscal creada con éxito", "ok");
       setResultado(extraerCreado(data?.Data));
+      onCreado?.(referenciaTrim);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
@@ -224,12 +226,7 @@ export default function CrearEspecieFiscal() {
   };
 
   return (
-    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "900px" }}>
-      <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "20px" }}>
-        <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
-        <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>{meta.desc}</div>
-      </div>
-
+    <div>
       <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
         <div className="field" style={{ marginBottom: "16px" }}>
           <label>Referencia Operativa</label>
@@ -385,6 +382,277 @@ export default function CrearEspecieFiscal() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TabConsultar({ initParams }) {
+  const [referenciasTexto, setReferenciasTexto] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [buscado, setBuscado] = useState(false);
+  const [resultados, setResultados] = useState([]);
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [observacionEliminar, setObservacionEliminar] = useState("");
+  const [eliminando, setEliminando] = useState(false);
+
+  const autorizadorActual = useAutorizadorActual();
+  const showToast = useToast();
+
+  // Recibe el texto explícito (en vez de leerlo del estado) para poder buscar de inmediato
+  // al llegar desde "Crear" sin depender de que el setState ya se haya aplicado.
+  const buscarConTexto = async (texto) => {
+    const referencias = texto.split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean);
+    if (referencias.length === 0) {
+      showToast("Ingrese al menos una Referencia Operativa", "warn");
+      return;
+    }
+    setBuscando(true);
+    setSeleccionados([]);
+    try {
+      const resp = await apiFetch(`/especiesFiscalesPorReferencia`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ referencias })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al buscar Especies Fiscales", "warn");
+        setResultados([]);
+        setBuscado(true);
+        return;
+      }
+      setResultados(Array.isArray(data) ? data : []);
+      setBuscado(true);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+      setBuscado(true);
+    } finally {
+      setBuscando(false);
+    }
+  };
+
+  const handleBuscar = () => buscarConTexto(referenciasTexto);
+
+  // Llegada automática desde "Crear" justo después de crear una Especie Fiscal: ya se sabe
+  // la Referencia Operativa, así que se busca sola para confirmar que sí quedó creada, sin
+  // que el usuario tenga que volver a escribirla. El "token" distingue cada creación para
+  // repetir la búsqueda aunque sea la misma referencia dos veces seguidas.
+  const ultimoTokenRef = useRef(null);
+  useEffect(() => {
+    if (initParams?.referencia && initParams.token !== ultimoTokenRef.current) {
+      ultimoTokenRef.current = initParams.token;
+      setReferenciasTexto(initParams.referencia);
+      buscarConTexto(initParams.referencia);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initParams]);
+
+  const handleLimpiar = () => {
+    setReferenciasTexto("");
+    setBuscando(false);
+    setBuscado(false);
+    setResultados([]);
+    setSeleccionados([]);
+    setObservacionEliminar("");
+  };
+
+  const toggleSeleccionado = (id) => {
+    setSeleccionados((prev) => prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]);
+  };
+
+  const handleEliminar = async () => {
+    if (seleccionados.length === 0) {
+      showToast("Seleccione al menos una Especie Fiscal para eliminar", "warn");
+      return;
+    }
+    const observacionTrim = observacionEliminar.trim();
+    if (!observacionTrim) {
+      showToast("Indique el motivo de la eliminación", "warn");
+      return;
+    }
+    if (!autorizadorActual) {
+      showToast("Tu usuario no está habilitado como autorizador", "warn");
+      return;
+    }
+    if (!window.confirm(`¿Confirma eliminar ${seleccionados.length} Especie(s) Fiscal(es)?\n\nMotivo: ${observacionTrim}`)) {
+      return;
+    }
+
+    setEliminando(true);
+    try {
+      const resp = await apiFetch(`/eliminarEspecieFiscal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          List: seleccionados,
+          Observacion: observacionTrim,
+          ModifiedBy: autorizadorActual.id
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al eliminar la(s) Especie(s) Fiscal(es)", "warn");
+        return;
+      }
+      showToast(data?.Message || "✓ Especie(s) Fiscal(es) eliminada(s) con éxito", "ok");
+      setResultados((prev) => prev.filter((r) => !seleccionados.includes(r.Id)));
+      setSeleccionados([]);
+      setObservacionEliminar("");
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setEliminando(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+        <div className="field" style={{ marginBottom: "16px" }}>
+          <label>Referencia Operativa</label>
+          <input
+            type="text"
+            placeholder="Una o varias Referencias Operativas..."
+            value={referenciasTexto}
+            onChange={(e) => setReferenciasTexto(e.target.value)}
+            disabled={buscando}
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button type="button" className="btn primary" onClick={handleBuscar} disabled={buscando} style={{ padding: "0 16px" }}>
+            {buscando ? "Buscando..." : "Buscar"}
+          </button>
+          <button type="button" className="btn ghost" onClick={handleLimpiar} disabled={buscando} style={{ padding: "0 16px" }}>
+            Limpiar
+          </button>
+        </div>
+      </div>
+
+      {buscado && resultados.length === 0 && (
+        <p style={{ color: "#697386", fontSize: "13px" }}>No se encontraron Especies Fiscales para esa búsqueda.</p>
+      )}
+
+      {resultados.length > 0 && (
+        <>
+          <div className="doc-table-wrap" style={{ marginBottom: "20px" }}>
+            <table className="doc-table" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Correlativo</th>
+                  <th>Referencia Operativa</th>
+                  <th>Especie Fiscal</th>
+                  <th>Cliente</th>
+                  <th>Creado por</th>
+                  <th>Observación</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resultados.map((r) => (
+                  <tr key={r.Id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={seleccionados.includes(r.Id)}
+                        onChange={() => toggleSeleccionado(r.Id)}
+                        disabled={eliminando}
+                      />
+                    </td>
+                    <td>{formatearValor(r.Correlativo)}</td>
+                    <td>{formatearValor(r.ReferenciaOperativa)}</td>
+                    <td>{formatearValor(r.EspecieFiscal)}</td>
+                    <td>{formatearValor(r.Cliente)}</td>
+                    <td>{formatearValor(r.CreadoPor)}</td>
+                    <td>{formatearValor(r.Observacion)}</td>
+                    <td>{formatearValor(r.Estado)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee" }}>
+            <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>
+              Eliminar seleccionadas ({seleccionados.length})
+            </div>
+            <div className="field" style={{ marginBottom: "16px" }}>
+              <label>Observación (motivo de la eliminación)</label>
+              <input
+                type="text"
+                value={observacionEliminar}
+                onChange={(e) => setObservacionEliminar(e.target.value)}
+                disabled={eliminando}
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+              />
+            </div>
+            <div style={{ marginBottom: "16px" }}>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Autorizado por
+              </label>
+              <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#f1f5f9", color: autorizadorActual ? "#1a1f36" : "#b42318" }}>
+                {autorizadorActual?.name || "Tu usuario no está habilitado como autorizador"}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn danger"
+              onClick={handleEliminar}
+              disabled={eliminando || seleccionados.length === 0}
+              style={{ padding: "8px 20px" }}
+            >
+              {eliminando ? "Eliminando..." : `Eliminar ${seleccionados.length || ""} Especie(s) Fiscal(es)`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function CrearEspecieFiscal() {
+  const [tab, setTab] = useState("consultar");
+  // Referencia + token que "Crear" le pasa a "Consultar" justo después de crear una Especie
+  // Fiscal, para que la busque sola al cambiar de tab (ver TabConsultar).
+  const [consultarInit, setConsultarInit] = useState(null);
+
+  const handleCreado = (referencia) => {
+    setConsultarInit({ referencia, token: Date.now() });
+    setTab("consultar");
+  };
+
+  const tabs = [
+    { key: "consultar", label: "Consultar" },
+    { key: "crear", label: "Crear" },
+  ];
+
+  return (
+    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "900px" }}>
+      <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "20px" }}>
+        <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
+        <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>{meta.desc}</div>
+      </div>
+
+      <div style={{ display: "flex", gap: "8px", marginBottom: "20px", borderBottom: "1px solid #eaeaea" }}>
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: "10px 16px", fontSize: "13px", fontWeight: "600", border: "none", background: "none", cursor: "pointer",
+              color: tab === t.key ? "#b42318" : "#697386",
+              borderBottom: tab === t.key ? "2px solid #b42318" : "2px solid transparent"
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "crear" && <TabCrear onCreado={handleCreado} />}
+      {tab === "consultar" && <TabConsultar initParams={consultarInit} />}
     </div>
   );
 }

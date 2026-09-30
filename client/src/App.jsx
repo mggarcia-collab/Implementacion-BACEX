@@ -271,7 +271,7 @@ function AppShell() {
               </div>
             </div>
           ) : !mod ? (
-            <div className="panel" style={{ position: "relative", overflow: "hidden" }}>
+            <div className="panel" style={{ position: "relative" }}>
               <div style={{
                 position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
                 zIndex: 0, opacity: 0.08, pointerEvents: "none", userSelect: "none",

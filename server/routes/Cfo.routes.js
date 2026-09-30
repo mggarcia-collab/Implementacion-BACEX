@@ -5270,4 +5270,171 @@ app.post('/crearEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), 
     }
 });
 
+// Valores de SolicitudEspecieFiscal.Status_Value confirmados hasta ahora (el de "Creado" viene
+// de la respuesta real de SolicitudEspecieFiscal/Create); si aparece un valor no listado aquí,
+// se muestra el número tal cual en vez de adivinar una etiqueta.
+const ESTADOS_ESPECIE_FISCAL = { 1: "Creado" };
+
+app.post('/especiesFiscalesPorReferencia', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
+    try {
+        const { referencias } = req.body;
+        const listaReferencias = Array.isArray(referencias)
+            ? referencias.map((r) => String(r).trim()).filter(Boolean)
+            : [];
+        if (listaReferencias.length === 0) {
+            return res.status(400).json({ Message: "Debe indicar al menos una Referencia Operativa." });
+        }
+
+        const poolCfo = await conexion(BasesDeDatos.CfoNetCore);
+        const request = poolCfo.request();
+        const parametros = listaReferencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+
+        const resultado = await request.query(`
+            SELECT SEF.ReferenciaOperativa, SEF.Observacion, SEF.Status_Value, SEF.CreatedBy,
+                   MV.Descripcion, SEF.ClienteId, SEF.Id, SEF.Correlativo
+            FROM dbo.SolicitudEspecieFiscal SEF
+            LEFT JOIN dbo.MaterialVariable MV ON MV.Id = SEF.MaterialVariableId
+            WHERE SEF.ReferenciaOperativa IN (${parametros.join(", ")})
+              AND SEF.IsSoftDeleted = 0
+        `);
+
+        const filas = resultado.recordset;
+
+        // ClienteId y CreatedBy son PersonaId — se resuelven a nombre en un solo viaje a
+        // Personas en vez de mostrar el GUID crudo (lo que pidió el usuario).
+        const idsPersonas = [...new Set(
+            filas.flatMap((f) => [f.ClienteId, f.CreatedBy])
+                .filter(Boolean)
+                .map((id) => String(id).toUpperCase())
+        )];
+        const nombresPorId = {};
+        if (idsPersonas.length > 0) {
+            const poolPersonas = await conexion(BasesDeDatos.Personas);
+            const requestPersonas = poolPersonas.request();
+            const parametrosPersonas = idsPersonas.map((id, i) => {
+                const nombre = `p${i}`;
+                requestPersonas.input(nombre, sql.UniqueIdentifier, id);
+                return `@${nombre}`;
+            });
+            const personas = await requestPersonas.query(`
+                SELECT Id, Nombre FROM [dbo].[Persona] WHERE Id IN (${parametrosPersonas.join(", ")})
+            `);
+            for (const p of personas.recordset) {
+                nombresPorId[String(p.Id).toUpperCase()] = p.Nombre;
+            }
+
+            // Algunos registros (ej. creados desde Swagger, no desde este módulo) guardan en
+            // ClienteId el Id de CfoNetCore.dbo.Cliente en vez del PersonaId directo — se
+            // confirmó contra un caso real. Para los que no se resolvieron como Persona
+            // directa, se intenta esta segunda vía antes de darse por vencido.
+            const faltantes = idsPersonas.filter((id) => !nombresPorId[id]);
+            if (faltantes.length > 0) {
+                const requestClientes = poolCfo.request();
+                const parametrosClientes = faltantes.map((id, i) => {
+                    const nombre = `c${i}`;
+                    requestClientes.input(nombre, sql.UniqueIdentifier, id);
+                    return `@${nombre}`;
+                });
+                const clientes = await requestClientes.query(`
+                    SELECT Id, PersonaId FROM [dbo].[Cliente] WHERE Id IN (${parametrosClientes.join(", ")})
+                `);
+                const personaIdsViaCliente = [...new Set(clientes.recordset.map((c) => c.PersonaId).filter(Boolean))];
+                if (personaIdsViaCliente.length > 0) {
+                    const requestPersonas2 = poolPersonas.request();
+                    const parametrosPersonas2 = personaIdsViaCliente.map((id, i) => {
+                        const nombre = `p2_${i}`;
+                        requestPersonas2.input(nombre, sql.UniqueIdentifier, id);
+                        return `@${nombre}`;
+                    });
+                    const personas2 = await requestPersonas2.query(`
+                        SELECT Id, Nombre FROM [dbo].[Persona] WHERE Id IN (${parametrosPersonas2.join(", ")})
+                    `);
+                    const nombrePorPersonaId = {};
+                    for (const p of personas2.recordset) {
+                        nombrePorPersonaId[String(p.Id).toUpperCase()] = p.Nombre;
+                    }
+                    for (const c of clientes.recordset) {
+                        const nombre = c.PersonaId && nombrePorPersonaId[String(c.PersonaId).toUpperCase()];
+                        if (nombre) nombresPorId[String(c.Id).toUpperCase()] = nombre;
+                    }
+                }
+            }
+        }
+
+        const resultados = filas.map((f) => ({
+            Id: f.Id,
+            Correlativo: f.Correlativo,
+            ReferenciaOperativa: f.ReferenciaOperativa,
+            EspecieFiscal: f.Descripcion,
+            Cliente: f.ClienteId ? (nombresPorId[String(f.ClienteId).toUpperCase()] || null) : null,
+            CreadoPor: f.CreatedBy ? (nombresPorId[String(f.CreatedBy).toUpperCase()] || null) : null,
+            Observacion: f.Observacion,
+            Estado: ESTADOS_ESPECIE_FISCAL[f.Status_Value] || String(f.Status_Value),
+        }));
+        return res.json(resultados);
+
+    } catch (error) {
+        console.error("Error en especiesFiscalesPorReferencia:", error);
+        return res.status(500).json({ Message: "Error al buscar Especies Fiscales", Error: error.message });
+    }
+});
+
+app.post('/eliminarEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
+    try {
+        const { List, Observacion, ModifiedBy } = req.body;
+
+        const ids = Array.isArray(List) ? List.map((id) => String(id).trim()).filter(Boolean) : [];
+        const observacionTrim = (Observacion || "").trim();
+
+        if (ids.length === 0) return res.status(400).json({ Message: "Seleccione al menos una Especie Fiscal para eliminar." });
+        if (!observacionTrim) return res.status(400).json({ Message: "Debe indicar el motivo de la eliminación." });
+        if (!ModifiedBy) return res.status(400).json({ Message: "El usuario que autoriza es requerido." });
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/SolicitudEspecieFiscal/ListDeleteEspecieFiscal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ModifiedBy, Observacion: observacionTrim, List: ids })
+        });
+
+        // Mismo cuidado que en DocumentoFiscal/DocumentoInterno CreateMany: solo "Exception"
+        // es confiable para detectar un error real.
+        const rawBody = await resp.text();
+        let data = null;
+        try { data = JSON.parse(rawBody); } catch { /* body no es JSON */ }
+
+        console.log(`SolicitudEspecieFiscal/ListDeleteEspecieFiscal → HTTP ${resp.status} para ${ids.join(", ")}:`, rawBody);
+
+        if (!data) {
+            console.error(`SolicitudEspecieFiscal/ListDeleteEspecieFiscal → respuesta no-JSON:`, rawBody);
+            return res.status(resp.status || 500).json({ Message: "Error al comunicarse con el servicio externo", Detail: rawBody });
+        }
+
+        if (data.Exception) {
+            return res.status(400).json({ Message: data.Exception.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "crearEspecieFiscal",
+            moduloLabel: "Crear Especie Fiscal",
+            accion: `Eliminó ${ids.length} Especie(s) Fiscal(es)`,
+            referencia: ids.join(", "),
+            motivo: observacionTrim
+        });
+
+        return res.status(200).json({ Message: "Especie(s) Fiscal(es) eliminada(s) con éxito", Data: data });
+
+    } catch (error) {
+        console.error("Error en eliminarEspecieFiscal:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 export default app;

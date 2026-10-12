@@ -362,7 +362,13 @@ export default function AnulacionFacturas() {
         return;
       }
       showToast(data?.Message || "✓ Factura(s) anulada(s) con éxito", "ok");
-      setUltimoResultado({ facturas, observacion: observacion.trim(), correo: autorizadorActual.correo });
+      setUltimoResultado({
+        facturas,
+        observacion: observacion.trim(),
+        correo: autorizadorActual.correo,
+        validacion: data?.Validacion || [],
+        alertaEnviada: !!data?.AlertaEnviada,
+      });
       setFacturasSeleccionadas([]);
       setObservacion("");
 
@@ -509,6 +515,11 @@ export default function AnulacionFacturas() {
                                   {f.AnuladoFecha ? ` · ${formatearFechaAnulacion(f.AnuladoFecha)}` : ""}
                                 </div>
                               )}
+                              {f.InconsistenciaFactura && (
+                                <div style={{ fontSize: "11px", marginTop: "3px", color: "#92400e", fontWeight: "600" }}>
+                                  ⚠️ Factura con inconsistencia — {f.AlertaEnviada ? "se generó una alerta para los encargados" : "ya se había alertado a los encargados"}
+                                </div>
+                              )}
                             </>
                           ) : (
                             <span style={{ color: "#a3acb9" }}>—</span>
@@ -635,6 +646,21 @@ export default function AnulacionFacturas() {
             </div>
             <div style={{ fontSize: "14px", color: "#334155", wordBreak: "break-word" }}>{ultimoResultado.correo || "—"}</div>
           </div>
+
+          {ultimoResultado.validacion?.some((v) => !v.ok) && (
+            <div style={{ marginTop: "16px", border: "1px solid #fde68a", background: "#fffbeb", borderRadius: "8px", padding: "14px" }}>
+              <div style={{ fontSize: "13px", fontWeight: "700", color: "#92400e", marginBottom: "8px" }}>
+                ⚠️ Anulación incompleta en una o más facturas
+                {ultimoResultado.alertaEnviada ? " — se generó una alerta para los encargados" : ""}
+              </div>
+              {ultimoResultado.validacion.filter((v) => !v.ok).map((v) => (
+                <div key={v.factura} style={{ fontSize: "13px", color: "#78350f", marginBottom: "4px" }}>
+                  <b>{v.factura}</b> — RegistroContable: {v.registroContable.encontrada ? (v.registroContable.anulada ? "anulada" : "NO anulada") : "no se encontró"};{" "}
+                  Factura: {v.facturaTabla.encontrada ? (v.facturaTabla.anulada ? "anulada" : "NO anulada") : "no se encontró"}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

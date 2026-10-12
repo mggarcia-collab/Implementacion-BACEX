@@ -1964,17 +1964,19 @@ function SeccionSitiosProveedorCfo({ persona, existentes, cargando, onRecargar }
   );
 }
 
-// Paso 5: Materiales del Proveedor en CFO. Cada Material se busca por Cuenta Mayor + Código ERP
-// (que identifican un MaterialTenant del Tenant de este registro) y el Nombre que el usuario le
-// da genera automáticamente el Código de Material (mismo algoritmo que la Referencia del
-// Proveedor), así que si se repite el mismo Nombre para Honduras/Corporación Dinant/Dinant
-// Exports, el código sale idéntico sin esfuerzo extra.
+// Paso 5: Materiales del Proveedor en CFO. El Material Tenant se busca y se elige por Cuenta
+// Mayor + Código ERP (identifican el registro del catálogo para este Tenant), pero el Nombre
+// que queda en el Material del Proveedor lo escribe el usuario -- algunos materiales tienen una
+// descripción distinta a la registrada en el catálogo, así que no se puede asumir que siempre
+// coinciden. Ese Nombre es el que genera el Código de Material (mismo algoritmo que la
+// Referencia del Proveedor).
 function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecargar }) {
   const [agregandoMaterialPara, setAgregandoMaterialPara] = useState(null); // proveedorId del registro donde se está agregando un Material
   const [materialesTenantCache, setMaterialesTenantCache] = useState({}); // tenantKey -> [{ Id, Descripcion, CuentaMayor, CodigoErpReembolso }] | "cargando"
   const [cuentaMayor, setCuentaMayor] = useState("");
   const [codigoErp, setCodigoErp] = useState("");
-  const [materialTenant, setMaterialTenant] = useState(null); // objeto elegido de la lista (trae su propia Descripcion), o null si aún no elige
+  const [materialTenant, setMaterialTenant] = useState(null); // objeto elegido de la lista (Material Tenant del catálogo), o null si aún no elige
+  const [descripcionMaterial, setDescripcionMaterial] = useState(""); // Nombre que el usuario le da a ESTE Material del Proveedor
   const [guardandoMaterialId, setGuardandoMaterialId] = useState(null);
   // Si el Material no existe para ningún Tenant, se puede dar de alta en el catálogo (Material
   // Tenant) con solo la Cuenta Mayor + Código ERP que el usuario ya tiene, más una Descripción y
@@ -2032,6 +2034,7 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
     setCuentaMayor("");
     setCodigoErp("");
     setMaterialTenant(null);
+    setDescripcionMaterial("");
     setPropagarPara(null);
     setRespuestaPropagar(null);
     if (materialesTenantCache[tenantKey] === undefined) cargarMaterialesTenant(tenantKey);
@@ -2042,6 +2045,7 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
     setCuentaMayor("");
     setCodigoErp("");
     setMaterialTenant(null);
+    setDescripcionMaterial("");
     setCreandoMaterialTenant(false);
     setDescripcionNuevoMaterialTenant("");
     setTenantKeyNuevoMaterialTenant("");
@@ -2130,11 +2134,12 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
       showToast("Tu usuario no está habilitado como autorizador", "warn");
       return;
     }
-    // La Descripcion no la escribe el usuario: se usa tal cual quedó registrada en el Material
-    // Tenant (mismas mayúsculas/minúsculas), para que sea idéntica entre Honduras, Corporación
-    // Dinant y Dinant Exports y el Código de Material generado también coincida.
     if (!materialTenant) return;
-    const nombreTrim = materialTenant.Descripcion.trim();
+    const nombreTrim = descripcionMaterial.trim();
+    if (!nombreTrim) {
+      showToast("El Nombre del Material es requerido", "warn");
+      return;
+    }
     if (!window.confirm(
       `¿Confirma agregar el Material "${nombreTrim}" (Código: ${previsualizarReferencia(nombreTrim)}) a este Proveedor (${proveedor.Pais})?`
     )) {
@@ -2195,14 +2200,12 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
         if (!filaDestino) continue;
         let lista = materialesTenantCache[tenantKey];
         if (!Array.isArray(lista)) lista = await cargarMaterialesTenant(tenantKey);
-        // La Cuenta Mayor y el Código ERP deben coincidir, y la Descripcion registrada en ese
-        // Tenant debe ser EXACTAMENTE igual (mismas mayúsculas/minúsculas) a la usada en
-        // Honduras — si no, el Código de Material no saldría idéntico, así que se trata como
-        // que el Material no existe para ese Tenant en vez de crear una versión distinta.
+        // Solo hace falta que coincidan Cuenta Mayor y Código ERP -- la Descripcion ya no tiene
+        // que ser igual a la del catálogo (el usuario la escribe libremente), así que tampoco
+        // hace falta que coincida entre Tenants para poder replicar el Material.
         const match = lista.find((m) =>
           (m.CuentaMayor || "") === propagarPara.cuentaMayor &&
-          (m.CodigoErpReembolso || "") === propagarPara.codigoErp &&
-          (m.Descripcion || "").trim() === propagarPara.descripcion
+          (m.CodigoErpReembolso || "") === propagarPara.codigoErp
         );
         if (!match) {
           mensajes.push(`Material para el tenant de ${filaDestino.Pais} no existe.`);
@@ -2352,7 +2355,7 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
                                     {coincidencias.map((m) => (
                                       <div
                                         key={m.Id}
-                                        onClick={() => { setMaterialTenant(m); setCuentaMayor(m.CuentaMayor); setCodigoErp(m.CodigoErpReembolso); }}
+                                        onClick={() => { setMaterialTenant(m); setCuentaMayor(m.CuentaMayor); setCodigoErp(m.CodigoErpReembolso); setDescripcionMaterial(m.Descripcion); }}
                                         style={{ padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid #f1f3f6" }}
                                       >
                                         <div style={{ fontSize: "13px" }}>{m.Descripcion}</div>
@@ -2422,21 +2425,32 @@ function SeccionMaterialesProveedorCfo({ persona, existentes, cargando, onRecarg
                             {materialTenant && (
                               <>
                                 <div style={{ fontSize: "13px", color: "#166534", marginBottom: "10px" }}>
-                                  ✓ Registrado como: <strong>{materialTenant.Descripcion}</strong> (Cuenta Mayor: {materialTenant.CuentaMayor} · Código ERP: {materialTenant.CodigoErpReembolso})
+                                  ✓ Material Tenant encontrado (Cuenta Mayor: {materialTenant.CuentaMayor} · Código ERP: {materialTenant.CodigoErpReembolso}, catálogo: "{materialTenant.Descripcion}")
                                 </div>
-                                <div style={{ fontSize: "12px", color: "#a3acb9", marginBottom: "10px" }}>
-                                  El Nombre no se puede editar: se usa tal cual está registrado (mismas mayúsculas/minúsculas), para que sea idéntico entre Honduras, Corporación Dinant y Dinant Exports.
+                                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#4f5b66", marginBottom: "6px" }}>
+                                  Nombre del Material *
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="Ej: SERVICIO EXTRAORDINARIO"
+                                  value={descripcionMaterial}
+                                  onChange={(ev) => setDescripcionMaterial(ev.target.value)}
+                                  disabled={guardandoMaterialId === e.Id}
+                                  style={{ width: "100%", maxWidth: "360px", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", marginBottom: "6px" }}
+                                />
+                                <div style={{ fontSize: "11px", color: "#a3acb9", marginBottom: "10px" }}>
+                                  Puede ser distinto al del catálogo — se precargó con "{materialTenant.Descripcion}" pero lo puedes cambiar.
                                 </div>
                                 <button
                                   type="button"
                                   className="btn primary"
                                   onClick={() => handleAgregarMaterial(e)}
-                                  disabled={guardandoMaterialId === e.Id}
+                                  disabled={guardandoMaterialId === e.Id || !descripcionMaterial.trim()}
                                 >
                                   {guardandoMaterialId === e.Id ? "Agregando..." : "Crear Material"}
                                 </button>
                                 <div style={{ fontSize: "11px", color: "#a3acb9", marginTop: "6px" }}>
-                                  Código de Material autogenerado: <strong>{previsualizarReferencia(materialTenant.Descripcion) || "—"}</strong>
+                                  Código de Material autogenerado: <strong>{previsualizarReferencia(descripcionMaterial) || "—"}</strong>
                                 </div>
                               </>
                             )}

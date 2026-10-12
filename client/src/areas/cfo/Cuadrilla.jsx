@@ -297,35 +297,66 @@ export default function Cuadrilla({ onNavigate }) {
           cuadrillasExistentes.length === 0 && documentosProvisionalesExistentes.length > 0 &&
           !avisoAgregarLineaDescartado && (
           <div style={{
-            display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+            display: "flex", flexDirection: "column", gap: "12px",
             background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
             padding: "14px 16px", marginBottom: "16px"
           }}>
-            <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "260px" }}>
-              ⚠️ Referencia Operativa con Documento Provisional sin Línea Material. ¿Desea agregar línea?
-            </span>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                type="button"
-                className="btn danger"
-                onClick={() => onNavigate?.("cfo", "eliminarModificarLineaMaterial", {
-                  referencia: referencia.trim(),
-                  autoAgregar: true,
-                  token: Date.now()
-                })}
-                style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
-              >
-                Sí, agregar línea
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => setAvisoAgregarLineaDescartado(true)}
-                style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
-              >
-                No
-              </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "260px" }}>
+                ⚠️ Referencia Operativa con Documento Provisional sin Línea Material. Revisa que el documento ya creado sea correcto antes de agregar la línea.
+              </span>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="btn danger"
+                  onClick={() => onNavigate?.("cfo", "eliminarModificarLineaMaterial", {
+                    referencia: referencia.trim(),
+                    autoAgregar: true,
+                    token: Date.now()
+                  })}
+                  style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+                >
+                  Sí, agregar línea
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setAvisoAgregarLineaDescartado(true)}
+                  style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+                >
+                  No
+                </button>
+              </div>
             </div>
+
+            <table className="doc-table" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th>Cliente</th>
+                  <th>Tipo Documento</th>
+                  <th>Material</th>
+                  <th style={{ textAlign: "right" }}>Monto</th>
+                  <th style={{ textAlign: "right" }}>Precio Venta</th>
+                  <th>Moneda</th>
+                  <th>Fecha</th>
+                </tr>
+              </thead>
+              <tbody>
+                {documentosProvisionalesExistentes.map((d) => (
+                  <tr key={d.Id}>
+                    <td>{d.Proveedor || "—"}</td>
+                    <td>{d.Cliente || "—"}</td>
+                    <td>{d.Tipo_Documento || "—"}</td>
+                    <td>{d.MaterialProveedor || "—"}</td>
+                    <td style={{ textAlign: "right" }}>{d.Monto_Documento ?? "—"}</td>
+                    <td style={{ textAlign: "right" }}>{d.PrecioVenta ?? "—"}</td>
+                    <td>{d.MonedaLabel}</td>
+                    <td>{d.CreatedDate ? new Date(d.CreatedDate).toLocaleString("es-HN") : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 

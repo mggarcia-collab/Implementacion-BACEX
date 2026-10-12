@@ -22,7 +22,7 @@ const MONEDAS = [
 // Tabla de Materiales Fijos o Variables (misma estructura de columnas y acciones para ambas,
 // solo cambia "tipo" (fijo/variable) que se le manda al backend para saber a cuál de los dos
 // comandos externos (UpdateLineaMaterialFlat / UpdateLineaMaterialVariable) debe llamar.
-function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLocal, onEliminadoLocal, onEliminadosLoteLocal }) {
+function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLocal, onEliminadoLocal, onEliminadosLoteLocal, mostrarReferencia }) {
   const [editandoId, setEditandoId] = useState(null);
   const [valorEdicion, setValorEdicion] = useState("");
   const [costoEdicion, setCostoEdicion] = useState("");
@@ -32,6 +32,14 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
   const [eliminandoId, setEliminandoId] = useState(null);
   const [seleccionados, setSeleccionados] = useState(() => new Set());
   const [eliminandoLote, setEliminandoLote] = useState(false);
+  // Modificación en lote: un solo motivo para todas las líneas seleccionadas, pero cada una
+  // conserva su propio Valor/Costo/Moneda editable (no tiene sentido compartir esos números
+  // entre materiales distintos, solo la razón del cambio).
+  const [modoLoteModificar, setModoLoteModificar] = useState(false);
+  const [edicionLote, setEdicionLote] = useState({}); // { [id]: { valor, costo, moneda } }
+  const [observacionLote, setObservacionLote] = useState("");
+  const [guardandoLote, setGuardandoLote] = useState(false);
+  const [resultadoLote, setResultadoLote] = useState(null); // [{ id, descripcion, estado, detalle }]
   const showToast = useToast();
 
   const toggleSeleccion = (id) => {
@@ -185,13 +193,109 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
         showToast(data?.Message || "Error al eliminar las Líneas de Material", "warn");
         return;
       }
-      showToast(data?.Message || "✓ Eliminadas con éxito", "ok");
-      onEliminadosLoteLocal(ids);
-      setSeleccionados(new Set());
+      // Si Azure rechazó algún lote a mitad de camino (ej. por el límite de 50 líneas por
+      // llamada), el backend ya reparte en lotes, pero puede quedar un resultado parcial --
+      // IdsEliminados trae solo las que sí se aplicaron, para no dar por eliminadas las que no.
+      const idsEliminados = Array.isArray(data?.IdsEliminados) ? data.IdsEliminados : ids;
+      showToast(data?.Message || "✓ Eliminadas con éxito", data?.Completo === false ? "warn" : "ok");
+      onEliminadosLoteLocal(idsEliminados);
+      setSeleccionados((prev) => {
+        const next = new Set(prev);
+        for (const id of idsEliminados) next.delete(id);
+        return next;
+      });
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
       setEliminandoLote(false);
+    }
+  };
+
+  const handleIniciarModificarLote = () => {
+    const inicial = {};
+    for (const f of filas) {
+      if (seleccionados.has(f.Id)) {
+        inicial[f.Id] = { valor: f.Valor ?? "", costo: f.Costo ?? "", moneda: f.Currency_Value ?? "" };
+      }
+    }
+    setEdicionLote(inicial);
+    setObservacionLote("");
+    setResultadoLote(null);
+    setModoLoteModificar(true);
+  };
+
+  const handleCancelarModificarLote = () => {
+    setModoLoteModificar(false);
+    setEdicionLote({});
+    setObservacionLote("");
+  };
+
+  const actualizarCampoLote = (id, campo, valor) => {
+    setEdicionLote((prev) => ({ ...prev, [id]: { ...prev[id], [campo]: valor } }));
+  };
+
+  const handleGuardarLote = async () => {
+    if (!autorizador) {
+      showToast("Tu usuario no está habilitado como autorizador", "warn");
+      return;
+    }
+    if (!observacionLote.trim()) {
+      showToast("Debe indicar la observación (motivo del cambio)", "warn");
+      return;
+    }
+    const ids = Object.keys(edicionLote);
+    if (ids.length === 0) return;
+    if (!window.confirm(`¿Confirma modificar ${ids.length} Línea(s) de Material con el mismo motivo?\n\nMotivo: ${observacionLote.trim()}`)) {
+      return;
+    }
+    setGuardandoLote(true);
+    const resultados = [];
+    try {
+      for (const id of ids) {
+        const f = filas.find((fila) => fila.Id === id);
+        const cambio = edicionLote[id];
+        try {
+          const resp = await apiFetch(`/modificarLineaMaterial`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              Tipo: tipo,
+              Id: id,
+              Valor: cambio.valor,
+              Costo: cambio.costo,
+              MonedaValue: cambio.moneda,
+              ModifiedBy: autorizador,
+              Observacion: observacionLote.trim()
+            })
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            resultados.push({ id, descripcion: f?.Descripcion || id, estado: "error", detalle: data?.Message || "Error al modificar" });
+            continue;
+          }
+          const nuevaMoneda = cambio.moneda === "" ? null : MONEDAS.find((m) => m.value === Number(cambio.moneda));
+          onModificadoLocal(id, {
+            Valor: cambio.valor === "" ? null : Number(cambio.valor),
+            Costo: cambio.costo === "" ? null : Number(cambio.costo),
+            ...(nuevaMoneda ? { Currency_Value: nuevaMoneda.value, MonedaLabel: nuevaMoneda.label } : {})
+          });
+          resultados.push({ id, descripcion: f?.Descripcion || id, estado: "ok", detalle: data?.Message || "Modificado con éxito" });
+        } catch {
+          resultados.push({ id, descripcion: f?.Descripcion || id, estado: "error", detalle: "Error de conexión con el servidor" });
+        }
+      }
+      setResultadoLote(resultados);
+      const exitosas = resultados.filter((r) => r.estado === "ok").length;
+      showToast(
+        exitosas === 0 ? "No se pudo modificar ninguna línea" : `✓ Modificadas ${exitosas} de ${ids.length} línea(s)`,
+        exitosas === ids.length ? "ok" : "warn"
+      );
+      setModoLoteModificar(false);
+      setEdicionLote({});
+      setObservacionLote("");
+      setSeleccionados(new Set());
+    } finally {
+      setGuardandoLote(false);
     }
   };
 
@@ -201,9 +305,17 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
         <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px" }}>
           {titulo} ({filas.length})
         </div>
-        {seleccionados.size > 0 && (
+        {seleccionados.size > 0 && !modoLoteModificar && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "12px", color: "#697386" }}>{seleccionados.size} seleccionado{seleccionados.size !== 1 ? "s" : ""}</span>
+            <button
+              className="btn soft"
+              onClick={handleIniciarModificarLote}
+              disabled={eliminandoLote}
+              style={{ padding: "4px 12px", fontSize: "12px" }}
+            >
+              Modificar seleccionados
+            </button>
             <button
               className="btn danger"
               onClick={handleEliminarLote}
@@ -214,7 +326,59 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
             </button>
           </div>
         )}
+        {modoLoteModificar && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "12px", color: "#697386" }}>Modificando {Object.keys(edicionLote).length} línea(s)</span>
+            <button
+              className="btn primary"
+              onClick={handleGuardarLote}
+              disabled={guardandoLote}
+              style={{ padding: "4px 12px", fontSize: "12px" }}
+            >
+              {guardandoLote ? "Guardando..." : "Guardar cambios"}
+            </button>
+            <button
+              className="btn ghost"
+              onClick={handleCancelarModificarLote}
+              disabled={guardandoLote}
+              style={{ padding: "4px 12px", fontSize: "12px" }}
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
       </div>
+
+      {modoLoteModificar && (
+        <div style={{ marginBottom: "12px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#4f5b66", marginBottom: "6px" }}>
+            Motivo del cambio (aplica a las {Object.keys(edicionLote).length} líneas seleccionadas) *
+          </label>
+          <input
+            type="text"
+            placeholder="Ej: Corrección de valor según negociación"
+            value={observacionLote}
+            onChange={(e) => setObservacionLote(e.target.value)}
+            disabled={guardandoLote}
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px" }}
+          />
+        </div>
+      )}
+
+      {resultadoLote && (
+        <div style={{ marginBottom: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+          {resultadoLote.map((r) => (
+            <div key={r.id} style={{
+              background: r.estado === "ok" ? "#d1fae5" : "#fee2e2",
+              color: r.estado === "ok" ? "#065f46" : "#991b1b",
+              borderRadius: "6px", padding: "6px 10px", fontSize: "12px"
+            }}>
+              {r.estado === "ok" ? "✓" : "✗"} <b>{r.descripcion}</b> — {r.detalle}
+            </div>
+          ))}
+        </div>
+      )}
+
       {filas.length === 0 ? (
         <p style={{ color: "#697386", fontSize: "13px", margin: 0 }}>Sin registros.</p>
       ) : (
@@ -224,7 +388,8 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
                 alineadas entre ambas, aunque el contenido de cada una sea distinto. */}
             <colgroup>
               <col style={{ width: "36px" }} />
-              <col style={{ width: "26%" }} />
+              <col style={{ width: mostrarReferencia ? "20%" : "26%" }} />
+              {mostrarReferencia && <col style={{ width: "14%" }} />}
               <col style={{ width: "12%" }} />
               <col style={{ width: "12%" }} />
               <col style={{ width: "12%" }} />
@@ -238,10 +403,11 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
                     type="checkbox"
                     checked={todosSeleccionados}
                     onChange={toggleSeleccionTodos}
-                    disabled={eliminandoLote || !!editandoId}
+                    disabled={eliminandoLote || !!editandoId || modoLoteModificar}
                   />
                 </th>
                 <th>Material</th>
+                {mostrarReferencia && <th>Referencia Operativa</th>}
                 <th>Código ERP</th>
                 <th style={{ textAlign: "right" }}>Valor</th>
                 <th style={{ textAlign: "right" }}>Costo</th>
@@ -252,6 +418,8 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
             <tbody>
               {filas.map((f) => {
                 const enEdicion = editandoId === f.Id;
+                const enEdicionLote = modoLoteModificar && Object.prototype.hasOwnProperty.call(edicionLote, f.Id);
+                const cambioLote = edicionLote[f.Id];
                 return (
                   <tr key={f.Id}>
                     <td>
@@ -259,12 +427,48 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
                         type="checkbox"
                         checked={seleccionados.has(f.Id)}
                         onChange={() => toggleSeleccion(f.Id)}
-                        disabled={eliminandoLote || eliminandoId === f.Id || enEdicion}
+                        disabled={eliminandoLote || eliminandoId === f.Id || enEdicion || modoLoteModificar}
                       />
                     </td>
                     <td style={{ whiteSpace: "normal", wordBreak: "break-word", minWidth: "160px" }}>{f.Descripcion}</td>
+                    {mostrarReferencia && <td>{f.ReferenciaOperativa}</td>}
                     <td>{f.MaterialErp}</td>
-                    {enEdicion ? (
+                    {enEdicionLote ? (
+                      <>
+                        <td style={{ textAlign: "right" }}>
+                          <input
+                            type="number" step="any"
+                            value={cambioLote.valor}
+                            onChange={(e) => actualizarCampoLote(f.Id, "valor", e.target.value)}
+                            disabled={guardandoLote}
+                            style={{ width: "100px", boxSizing: "border-box", padding: "6px 8px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", textAlign: "right" }}
+                          />
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <input
+                            type="number" step="any"
+                            value={cambioLote.costo}
+                            onChange={(e) => actualizarCampoLote(f.Id, "costo", e.target.value)}
+                            disabled={guardandoLote}
+                            style={{ width: "100px", boxSizing: "border-box", padding: "6px 8px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", textAlign: "right" }}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            value={cambioLote.moneda}
+                            onChange={(e) => actualizarCampoLote(f.Id, "moneda", e.target.value)}
+                            disabled={guardandoLote}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", background: "#fff" }}
+                          >
+                            <option value="">Seleccione...</option>
+                            {MONEDAS.map((m) => (
+                              <option key={m.value} value={m.value}>{m.label}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ textAlign: "right", fontSize: "11px", color: "#8a94a6" }}>En lote</td>
+                      </>
+                    ) : enEdicion ? (
                       <>
                         <td style={{ textAlign: "right" }}>
                           <input
@@ -327,7 +531,7 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
                           <button
                             className="btn soft"
                             onClick={() => handleIniciarEdicion(f)}
-                            disabled={eliminandoId === f.Id}
+                            disabled={eliminandoId === f.Id || modoLoteModificar}
                             style={{ padding: "4px 10px", fontSize: "12px" }}
                           >
                             Editar
@@ -335,7 +539,7 @@ function TablaLineaMaterial({ titulo, tipo, filas, autorizador, onModificadoLoca
                           <button
                             className="btn danger"
                             onClick={() => handleEliminar(f)}
-                            disabled={eliminandoId === f.Id}
+                            disabled={eliminandoId === f.Id || modoLoteModificar}
                             style={{ padding: "4px 10px", fontSize: "12px", marginLeft: "6px" }}
                           >
                             {eliminandoId === f.Id ? "Eliminando..." : "Eliminar"}
@@ -448,6 +652,14 @@ function TablaMaterialesDisponibles({ titulo, filas, idField, seleccionados, onT
   );
 }
 
+// El campo de Referencia Operativa acepta una o varias (separadas por coma, espacio o línea
+// nueva) -- se usa tal cual para "Agregar Material" (los mismos materiales en cada una); para
+// ver/editar/eliminar líneas ya creadas (que es inherentemente de una sola SalesOrder) solo se
+// usa la primera.
+function parseReferencias(texto) {
+  return [...new Set((texto || "").split(/[,\s\n]+/).map((r) => r.trim()).filter(Boolean))];
+}
+
 export default function EliminarModificarLineaMaterial({ onNavigate, navParams }) {
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -459,16 +671,22 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
   const [seleccionVariables, setSeleccionVariables] = useState(() => new Set());
   const [agregando, setAgregando] = useState(false);
   const [vista, setVista] = useState("principal"); // "principal" | "agregar"
+  const [resultadoAgregarMultiple, setResultadoAgregarMultiple] = useState(null); // [{ referencia, estado, detalle }]
+  // Filtro visual (no vuelve a consultar el servidor: ya se tienen todas las filas cargadas)
+  // para encontrar rápido una línea puntual por su Código ERP dentro de lo ya buscado.
+  const [filtroCodigoErp, setFiltroCodigoErp] = useState("");
   const autorizadorActual = useAutorizadorActual();
   const autorizador = autorizadorActual?.id || "";
   const showToast = useToast();
 
-  const fetchDatos = async (referenciaTrim) => {
+  // Acepta una o varias Referencias Operativas -- cuando son varias, junta las Líneas de
+  // Material de todas en una sola lista (cada una marcada con su propia ReferenciaOperativa).
+  const fetchDatos = async (listaReferencias) => {
     try {
       const resp = await apiFetch(`/lineasMaterialPorReferencia`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referencia: referenciaTrim })
+        body: JSON.stringify({ referencias: listaReferencias })
       });
       const data = await resp.json().catch(() => null);
       if (!resp.ok) {
@@ -482,6 +700,9 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
       }
       setNoExisteSalesOrder(false);
       setDatos(data);
+      if (data?.NoEncontradas?.length > 0) {
+        showToast(`⚠️ No existe SalesOrder para: ${data.NoEncontradas.join(", ")}`, "warn");
+      }
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     }
@@ -512,7 +733,10 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
 
   // Núcleo compartido por la búsqueda manual (botón Buscar) y por la búsqueda automática
   // cuando se llega desde otro módulo (ej. Cuadrilla) con una Referencia Operativa ya conocida.
-  const buscarReferencia = async (referenciaTrim, { autoAgregar = false } = {}) => {
+  // Recibe el texto tal cual (una o varias referencias); las líneas ya creadas se muestran de
+  // TODAS juntas, pero los candidatos para "Agregar Material" solo se resuelven de la primera.
+  const buscarReferencia = async (referenciasTexto, { autoAgregar = false } = {}) => {
+    const lista = parseReferencias(referenciasTexto);
     setBuscando(true);
     setDatos(null);
     setMaterialesDisponibles(null);
@@ -521,8 +745,10 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
     setNoExisteSalesOrder(false);
     setSearched(false);
     setVista("principal");
+    setResultadoAgregarMultiple(null);
+    setFiltroCodigoErp("");
     try {
-      const [, materialesData] = await Promise.all([fetchDatos(referenciaTrim), fetchMaterialesDisponibles(referenciaTrim)]);
+      const [, materialesData] = await Promise.all([fetchDatos(lista), fetchMaterialesDisponibles(lista[0])]);
       // Si se pidió ir directo a la pantalla de Agregar Material (ej. desde el aviso de
       // Cuadrilla), solo se hace si la búsqueda sí encontró la SalesOrder/negociación.
       if (autoAgregar && materialesData) setVista("agregar");
@@ -533,12 +759,11 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
   };
 
   const handleBuscar = async () => {
-    const referenciaTrim = referencia.trim();
-    if (!referenciaTrim) {
-      showToast("Ingrese una Referencia Operativa", "warn");
+    if (parseReferencias(referencia).length === 0) {
+      showToast("Ingrese al menos una Referencia Operativa", "warn");
       return;
     }
-    await buscarReferencia(referenciaTrim);
+    await buscarReferencia(referencia);
   };
 
   const handleLimpiar = () => {
@@ -550,6 +775,8 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
     setNoExisteSalesOrder(false);
     setSearched(false);
     setVista("principal");
+    setResultadoAgregarMultiple(null);
+    setFiltroCodigoErp("");
   };
 
   // Llegada automática desde otro módulo (ej. Cuadrilla: "Documento Provisional sin Línea
@@ -616,6 +843,25 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
     });
   };
 
+  // Empareja los materiales seleccionados (por nombre) contra los candidatos de una Referencia
+  // Operativa puntual, para obtener los Ids propios de SU negociación -- el Material
+  // FlatSegmentoId/MaterialVariableSegmentoId de una referencia no sirve para otra si
+  // pertenecen a Componentes distintos, por eso cada una se resuelve por separado.
+  const resolverIdsPorNombre = (disponibles, nombresFijos, nombresVariables) => {
+    const flatIds = [];
+    const faltantes = [];
+    for (const nombre of nombresFijos) {
+      const match = disponibles.MaterialesFijosDisponibles.find((m) => m.NombreMaterial === nombre);
+      if (match) flatIds.push(match.MaterialFlatSegmentoId); else faltantes.push(nombre);
+    }
+    const variableIds = [];
+    for (const nombre of nombresVariables) {
+      const match = disponibles.MaterialesVariablesDisponibles.find((m) => m.NombreMaterial === nombre);
+      if (match) variableIds.push(match.MaterialVariableSegmentoId); else faltantes.push(nombre);
+    }
+    return { flatIds, variableIds, faltantes };
+  };
+
   const handleAgregarMateriales = async () => {
     if (!autorizador) {
       showToast("Tu usuario no está habilitado como autorizador", "warn");
@@ -627,43 +873,103 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
       showToast("Seleccione al menos un material para agregar", "warn");
       return;
     }
-    const nombres = [
-      ...materialesDisponibles.MaterialesFijosDisponibles.filter((m) => seleccionFijos.has(m.MaterialFlatSegmentoId)).map((m) => m.NombreMaterial),
-      ...materialesDisponibles.MaterialesVariablesDisponibles.filter((m) => seleccionVariables.has(m.MaterialVariableSegmentoId)).map((m) => m.NombreMaterial),
-    ].join(", ");
-    if (!window.confirm(`¿Confirma agregar ${flatIds.length + variableIds.length} material(es)?\n\n${nombres}`)) {
+    const nombresFijos = materialesDisponibles.MaterialesFijosDisponibles.filter((m) => seleccionFijos.has(m.MaterialFlatSegmentoId)).map((m) => m.NombreMaterial);
+    const nombresVariables = materialesDisponibles.MaterialesVariablesDisponibles.filter((m) => seleccionVariables.has(m.MaterialVariableSegmentoId)).map((m) => m.NombreMaterial);
+    const nombres = [...nombresFijos, ...nombresVariables].join(", ");
+
+    // Todas las referencias que haya en el campo de arriba (una o varias) reciben los mismos
+    // materiales seleccionados; la primera es la que ya se resolvió para mostrar los candidatos.
+    const todasReferencias = parseReferencias(referencia);
+    const referenciaBuscada = todasReferencias[0] || "";
+    if (todasReferencias.length === 0) {
+      showToast("Ingrese al menos una Referencia Operativa", "warn");
       return;
     }
+
+    const mensajeConfirm = todasReferencias.length > 1
+      ? `¿Confirma agregar ${flatIds.length + variableIds.length} material(es) en ${todasReferencias.length} Referencias Operativas?\n\n${nombres}\n\nReferencias: ${todasReferencias.join(", ")}`
+      : `¿Confirma agregar ${flatIds.length + variableIds.length} material(es)?\n\n${nombres}`;
+    if (!window.confirm(mensajeConfirm)) return;
+
     setAgregando(true);
+    setResultadoAgregarMultiple(null);
+    const resultados = [];
     try {
-      const resp = await apiFetch(`/agregarLineaMaterial`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ReferenciaOperativa: referencia.trim(),
-          SegmentoId: materialesDisponibles.SegmentoId,
-          MaterialFlatSegmentoIds: flatIds,
-          MaterialVariableSegmentoIds: variableIds,
-          CreatedBy: autorizador
-        })
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        showToast(data?.Message || "Error al agregar material(es)", "warn");
-        return;
+      for (const ref of todasReferencias) {
+        try {
+          // La referencia que ya se buscó arriba reutiliza lo que ya se tiene resuelto (ahorra
+          // una consulta); el resto de referencias resuelve su propia negociación aparte.
+          let disp;
+          if (ref === referenciaBuscada) {
+            disp = materialesDisponibles;
+          } else {
+            const dispResp = await apiFetch(`/materialesDisponiblesPorReferencia`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ referencia: ref })
+            });
+            const dispData = await dispResp.json().catch(() => null);
+            if (!dispResp.ok || !dispData) {
+              resultados.push({ referencia: ref, estado: "error", detalle: dispData?.Message || "No se pudo resolver la negociación de esta referencia" });
+              continue;
+            }
+            disp = dispData;
+          }
+
+          const { flatIds: flatIdsRef, variableIds: variableIdsRef, faltantes } = resolverIdsPorNombre(disp, nombresFijos, nombresVariables);
+
+          // Un renglón por cada material que no existe en la negociación de esta referencia,
+          // con el formato "Referencia no contiene el material: Nombre" -- así queda listo
+          // para copiar/reportar tal cual, en vez de un solo mensaje con todos juntos.
+          for (const nombreFaltante of faltantes) {
+            resultados.push({ referencia: ref, estado: "omitido", detalle: `no contiene el material: ${nombreFaltante}` });
+          }
+
+          if (flatIdsRef.length === 0 && variableIdsRef.length === 0) {
+            continue;
+          }
+
+          const addResp = await apiFetch(`/agregarLineaMaterial`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ReferenciaOperativa: ref,
+              SegmentoId: disp.SegmentoId,
+              MaterialFlatSegmentoIds: flatIdsRef,
+              MaterialVariableSegmentoIds: variableIdsRef,
+              CreatedBy: autorizador
+            })
+          });
+          const addData = await addResp.json().catch(() => null);
+          resultados.push({
+            referencia: ref,
+            estado: addResp.ok ? "ok" : "error",
+            detalle: addResp.ok ? (addData?.Message || "Agregado con éxito") : (addData?.Message || "Error al agregar")
+          });
+        } catch {
+          resultados.push({ referencia: ref, estado: "error", detalle: "Error de conexión con el servidor" });
+        }
       }
-      showToast(data?.Message || "✓ Material(es) agregado(s) con éxito", "ok");
+
+      setResultadoAgregarMultiple(resultados);
+      // Puede haber varios renglones por referencia (ej. un "ok" más uno o más "no contiene el
+      // material" para la misma), así que el resumen cuenta referencias únicas, no renglones.
+      const referenciasConExito = new Set(resultados.filter((r) => r.estado === "ok").map((r) => r.referencia));
+      showToast(
+        referenciasConExito.size === 0
+          ? "No se pudo agregar en ninguna referencia"
+          : `✓ Agregado en ${referenciasConExito.size} de ${todasReferencias.length} referencia(s)`,
+        referenciasConExito.size === todasReferencias.length ? "ok" : "warn"
+      );
+
       setSeleccionFijos(new Set());
       setSeleccionVariables(new Set());
-      // Se recarga tanto lo ya creado (nuevas filas) como los candidatos (para actualizar
-      // el flag "Ya agregado") — a diferencia de editar/eliminar, aquí sí conviene reconsultar
-      // porque el recién agregado necesita su Id real de LineaMaterial, no lo tenemos localmente.
-      const referenciaTrim = referencia.trim();
-      await Promise.all([fetchDatos(referenciaTrim), fetchMaterialesDisponibles(referenciaTrim)]);
-      // Una vez agregado, se vuelve a la pantalla inicial del módulo (listado de Fijos/Variables ya creados).
+      // Se recarga la lista combinada de las referencias procesadas (para ver ahí mismo lo
+      // recién agregado) y los candidatos de la primera (para el flag "Ya agregado").
+      await Promise.all([fetchDatos(todasReferencias), fetchMaterialesDisponibles(referenciaBuscada)]);
+      // Siempre se vuelve a la pantalla principal al terminar, igual que antes -- ahí ya se ve
+      // lo recién agregado (de todas las referencias juntas) en vez de quedarse en Agregar.
       setVista("principal");
-    } catch (error) {
-      showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
       setAgregando(false);
     }
@@ -678,11 +984,11 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
 
       <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "24px" }}>
         <div className="field" style={{ marginBottom: "16px" }}>
-          <label>Referencia Operativa</label>
+          <label>Referencia(s) Operativa(s)</label>
           <div style={{ display: "flex", gap: "8px" }}>
             <input
               type="text"
-              placeholder="Ej: CH-CH-H26-1463"
+              placeholder="Ej: CH-CH-H26-1463 (para agregar material en varias, sepáralas por coma o espacio)"
               value={referencia}
               onChange={(e) => setReferencia(e.target.value)}
               disabled={buscando}
@@ -745,26 +1051,75 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
         </div>
       )}
 
-      {datos && vista === "principal" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          <div style={{ border: "1px solid #e3e8ee", borderRadius: "8px", padding: "20px" }}>
-            <TablaLineaMaterial
-              titulo="Materiales Fijos" tipo="fijo" filas={datos.MaterialesFijos} autorizador={autorizador}
-              onModificadoLocal={(id, cambios) => actualizarFila("MaterialesFijos", id, cambios)}
-              onEliminadoLocal={(id) => quitarFila("MaterialesFijos", id)}
-              onEliminadosLoteLocal={(ids) => quitarFilas("MaterialesFijos", ids)}
-            />
-          </div>
-          <div style={{ border: "1px solid #e3e8ee", borderRadius: "8px", padding: "20px" }}>
-            <TablaLineaMaterial
-              titulo="Materiales Variables" tipo="variable" filas={datos.MaterialesVariables} autorizador={autorizador}
-              onModificadoLocal={(id, cambios) => actualizarFila("MaterialesVariables", id, cambios)}
-              onEliminadoLocal={(id) => quitarFila("MaterialesVariables", id)}
-              onEliminadosLoteLocal={(ids) => quitarFilas("MaterialesVariables", ids)}
-            />
-          </div>
+      {resultadoAgregarMultiple && (
+        <div style={{ marginBottom: "20px", display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66" }}>Resultado de la última vez que agregaste material:</div>
+          {resultadoAgregarMultiple.map((r, i) => {
+            const estilos = {
+              ok: { background: "#d1fae5", color: "#065f46", icono: "✓" },
+              omitido: { background: "#fef9c3", color: "#854d0e", icono: "⏭️" },
+              error: { background: "#fee2e2", color: "#991b1b", icono: "✗" },
+            }[r.estado];
+            return (
+              <div key={`${r.referencia}-${i}`} style={{ background: estilos.background, color: estilos.color, borderRadius: "6px", padding: "8px 10px", fontSize: "12.5px" }}>
+                {estilos.icono} <b>{r.referencia}</b> — {r.detalle}
+              </div>
+            );
+          })}
         </div>
       )}
+
+      {datos && vista === "principal" && (() => {
+        const referenciasDistintas = new Set([
+          ...datos.MaterialesFijos.map((f) => f.ReferenciaOperativa),
+          ...datos.MaterialesVariables.map((f) => f.ReferenciaOperativa),
+        ].filter(Boolean));
+        const mostrarReferencia = referenciasDistintas.size > 1;
+        // Filtro por Código ERP: solo visual, sobre lo que ya está cargado -- no vuelve a
+        // consultar el servidor, así que no hace falta ningún endpoint nuevo para esto.
+        const codigosErp = [...new Set([
+          ...datos.MaterialesFijos.map((f) => f.MaterialErp),
+          ...datos.MaterialesVariables.map((f) => f.MaterialErp),
+        ].filter(Boolean))].sort();
+        const aplicarFiltro = (filas) => filtroCodigoErp ? filas.filter((f) => f.MaterialErp === filtroCodigoErp) : filas;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+            {codigosErp.length > 1 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <label style={{ fontSize: "12px", fontWeight: "600", color: "#4f5b66" }}>Filtrar por Código ERP:</label>
+                <select
+                  value={filtroCodigoErp}
+                  onChange={(e) => setFiltroCodigoErp(e.target.value)}
+                  style={{ padding: "6px 10px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", background: "#fff" }}
+                >
+                  <option value="">Todos los códigos</option>
+                  {codigosErp.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div style={{ border: "1px solid #e3e8ee", borderRadius: "8px", padding: "20px" }}>
+              <TablaLineaMaterial
+                titulo="Materiales Fijos" tipo="fijo" filas={aplicarFiltro(datos.MaterialesFijos)} autorizador={autorizador}
+                mostrarReferencia={mostrarReferencia}
+                onModificadoLocal={(id, cambios) => actualizarFila("MaterialesFijos", id, cambios)}
+                onEliminadoLocal={(id) => quitarFila("MaterialesFijos", id)}
+                onEliminadosLoteLocal={(ids) => quitarFilas("MaterialesFijos", ids)}
+              />
+            </div>
+            <div style={{ border: "1px solid #e3e8ee", borderRadius: "8px", padding: "20px" }}>
+              <TablaLineaMaterial
+                titulo="Materiales Variables" tipo="variable" filas={aplicarFiltro(datos.MaterialesVariables)} autorizador={autorizador}
+                mostrarReferencia={mostrarReferencia}
+                onModificadoLocal={(id, cambios) => actualizarFila("MaterialesVariables", id, cambios)}
+                onEliminadoLocal={(id) => quitarFila("MaterialesVariables", id)}
+                onEliminadosLoteLocal={(ids) => quitarFilas("MaterialesVariables", ids)}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       {materialesDisponibles && vista === "agregar" && (
         <div style={{ border: "1px solid #b6d7a8", background: "#f6fbf3", borderRadius: "8px", padding: "20px", marginTop: "20px" }}>
@@ -798,6 +1153,14 @@ export default function EliminarModificarLineaMaterial({ onNavigate, navParams }
               </button>
             </div>
           </div>
+
+          {parseReferencias(referencia).length > 1 && (
+            <div style={{ marginBottom: "16px", fontSize: "12px", color: "#4f5b66", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: "6px", padding: "8px 10px" }}>
+              Se van a agregar los materiales seleccionados en las {parseReferencias(referencia).length} Referencias Operativas escritas arriba: {parseReferencias(referencia).join(", ")}.
+              Si alguna no tiene esos materiales configurados en su propia negociación, se omite y se indica en el resultado.
+            </div>
+          )}
+
           <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
             <TablaMaterialesDisponibles
               titulo="Materiales Fijos Disponibles"

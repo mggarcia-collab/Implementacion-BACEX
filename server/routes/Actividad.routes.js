@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authDb } from "../database/authDb.js";
+import { authDb, obtenerAlertasPendientes, marcarAlertaLeida, obtenerAlertasHistorial } from "../database/authDb.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const app = Router();
@@ -28,6 +28,41 @@ app.get("/actividad", requireAuth, (req, res) => {
         referencia: f.referencia,
         motivo: f.motivo,
         fecha: f.created_date
+    })));
+});
+
+// Alertas pendientes del usuario logueado (ej. widget de Inicio). Solo las propias —
+// a diferencia de /actividad, aquí no hay excepción para admin: la alerta ya se crea
+// apuntada a usuarios concretos (los destinatarios de negocio), no es un log general.
+app.get("/alertas", requireAuth, (req, res) => {
+    const filas = obtenerAlertasPendientes(req.user.id);
+    res.json(filas.map((f) => ({
+        id: f.id,
+        tipo: f.tipo,
+        titulo: f.titulo,
+        mensaje: f.mensaje,
+        referencia: f.referencia,
+        fecha: f.created_date
+    })));
+});
+
+app.post("/alertas/:id/leer", requireAuth, (req, res) => {
+    marcarAlertaLeida(Number(req.params.id), req.user.id);
+    res.json({ Message: "ok" });
+});
+
+// Historial de alertas ya leídas del usuario logueado (pestaña "Historial" de la campanita).
+app.get("/alertas/historial", requireAuth, (req, res) => {
+    const limite = Math.min(Number(req.query.limit) || 50, 500);
+    const filas = obtenerAlertasHistorial(req.user.id, limite);
+    res.json(filas.map((f) => ({
+        id: f.id,
+        tipo: f.tipo,
+        titulo: f.titulo,
+        mensaje: f.mensaje,
+        referencia: f.referencia,
+        fecha: f.created_date,
+        leidaFecha: f.leida_date
     })));
 });
 

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { conexion, BasesDeDatos } from '../database/database.js'
 import sql from 'mssql'
 import { requireAuth, requirePermission } from '../middleware/auth.js'
-import { registrarActividad, authDb } from '../database/authDb.js'
+import { registrarActividad, authDb, crearAlerta, resolverUsuarioIdPorCorreo } from '../database/authDb.js'
 
 const app = Router();
 app.use(requireAuth);
@@ -1345,7 +1345,8 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
             AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
         }));
-        return res.json(facturas);
+        const facturasConValidacion = await adjuntarInconsistenciasFactura(pool, facturas, req);
+        return res.json(facturasConValidacion);
 
     } catch (error) {
         console.error("Error en facturasPorReferencia:", error);
@@ -1409,13 +1410,146 @@ app.post('/facturasPorNumero', requirePermission('cfo', 'anulacionFacturas'), as
             AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
             AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
         }));
-        return res.json(resultados);
+        const resultadosConValidacion = await adjuntarInconsistenciasFactura(pool, resultados, req);
+        return res.json(resultadosConValidacion);
 
     } catch (error) {
         console.error("Error en facturasPorNumero:", error);
         return res.status(500).json({ Message: "Error al buscar facturas", Error: error.message });
     }
 });
+
+// En vez de correo (Office 365 bloqueó SMTP AUTH con contraseña normal para estas cuentas),
+// la alerta se crea como notificación dentro de la app para estos dos usuarios -- requiere
+// que ambos correos existan como `correo` de algún usuario en auth.db; si no, se loguea un
+// aviso y esa alerta en particular no se crea para ese destinatario (no rompe el flujo).
+const ALERTA_ANULACION_DESTINATARIOS = ["mggarcia@grupovesta.net", "kgvalladares@grupovesta.net"];
+
+function construirMensajeInconsistencia(p, detalleTexto, remitente) {
+    const partes = [
+        `RegistroContable: ${describirEstado(p.registroContable)}.`,
+        `dbo.Factura: ${describirEstado(p.facturaTabla)}.`,
+    ];
+    if (remitente?.nombre) partes.push(`Autorizado por: ${remitente.nombre}${remitente.correo ? ` (${remitente.correo})` : ""}.`);
+    if (detalleTexto) partes.push(detalleTexto);
+    return partes.join(" ");
+}
+
+// Crea una alerta por cada factura con problema, para cada destinatario. Se deduplica por
+// factura dentro de authDb.crearAlerta (no crea otra si ya hay una sin leer para esa misma
+// factura+usuario), así que no importa si la misma factura se detecta varias veces en
+// distintas búsquedas o anulaciones -- solo se "re-alerta" si la anterior ya se marcó como
+// leída. Devuelve factura -> true/false (si se creó una alerta nueva en esta llamada).
+function procesarAlertaInconsistencias(validacion, detalleTexto, remitente) {
+    const problemas = validacion.filter((v) => !v.ok);
+    const resultado = {};
+
+    for (const p of problemas) {
+        const mensaje = construirMensajeInconsistencia(p, detalleTexto, remitente);
+        let creadaParaAlguno = false;
+        for (const correo of ALERTA_ANULACION_DESTINATARIOS) {
+            const usuarioId = resolverUsuarioIdPorCorreo(correo);
+            if (!usuarioId) {
+                console.warn(`No se pudo crear alerta de anulación incompleta: no existe un usuario en BAC-EX con correo ${correo}`);
+                continue;
+            }
+            const creada = crearAlerta({
+                usuarioId,
+                tipo: "anulacion_incompleta",
+                titulo: `Factura ${p.factura}: anulación incompleta`,
+                mensaje,
+                referencia: p.factura,
+            });
+            if (creada) creadaParaAlguno = true;
+        }
+        resultado[p.factura] = creadaParaAlguno;
+    }
+
+    return resultado;
+}
+
+// Para cada factura ya marcada "Anulada" en los resultados de búsqueda (facturasPorReferencia
+// / facturasPorNumero), revisa si también quedó anulada en dbo.Factura y, si no, crea la
+// alerta correspondiente -- así el usuario ve la inconsistencia apenas busca, sin tener que
+// darle a un botón aparte. Las facturas "Habilitada" no se tocan: no tiene sentido validar
+// dbo.Factura para algo que ni siquiera se ha anulado.
+async function adjuntarInconsistenciasFactura(pool, filas, req) {
+    const numeros = [...new Set(filas.filter((f) => f.Estado === "Anulada" && f.NumeroFacturaSap).map((f) => String(f.NumeroFacturaSap)))];
+    if (numeros.length === 0) return filas;
+
+    try {
+        const validacion = await verificarAnulacionCompleta(pool, numeros);
+        const alertaPorFactura = procesarAlertaInconsistencias(
+            validacion,
+            `Detectado al consultar el módulo de Anulación de Facturas (${req.user?.nombreCompleto || "—"}).`
+        );
+        const validacionPorFactura = {};
+        for (const v of validacion) validacionPorFactura[v.factura] = v;
+
+        return filas.map((f) => {
+            const v = f.NumeroFacturaSap ? validacionPorFactura[String(f.NumeroFacturaSap)] : null;
+            if (!v) return f;
+            return {
+                ...f,
+                InconsistenciaFactura: !v.ok,
+                AlertaEnviada: !!alertaPorFactura[v.factura],
+            };
+        });
+    } catch (error) {
+        console.error("Error verificando inconsistencias RegistroContable/Factura:", error);
+        return filas;
+    }
+}
+
+// Tras anular, RegistroContable.HabilitarParaRefacturacion solo marca IsSoftDeleted=1 en
+// CfoNetCore.dbo.RegistroContable -- no toca CfoNetCore.dbo.Factura (tabla independiente,
+// sin relación/trigger conocido entre ambas). Esta verificación confirma que las dos
+// terminaron en IsSoftDeleted=1 para cada factura anulada; si alguna no, se reporta para
+// poder avisar por correo en vez de asumir que la anulación quedó completa en todos lados.
+async function verificarAnulacionCompleta(pool, facturas) {
+    const requestRc = pool.request();
+    const requestFac = pool.request();
+    const parametros = facturas.map((_, i) => {
+        requestRc.input(`rc${i}`, sql.VarChar, facturas[i]);
+        requestFac.input(`fac${i}`, sql.VarChar, facturas[i]);
+        return `@rc${i}`;
+    });
+    const parametrosFac = facturas.map((_, i) => `@fac${i}`);
+
+    const [resRc, resFac] = await Promise.all([
+        requestRc.query(`
+            SELECT NumeroFacturaSap, IsSoftDeleted
+            FROM dbo.RegistroContable
+            WHERE NumeroFacturaSap IN (${parametros.join(", ")})
+        `),
+        requestFac.query(`
+            SELECT FacturaInterna, IsSoftDeleted
+            FROM dbo.Factura
+            WHERE FacturaInterna IN (${parametrosFac.join(", ")})
+        `),
+    ]);
+
+    const porRc = {};
+    for (const fila of resRc.recordset) porRc[String(fila.NumeroFacturaSap)] = !!fila.IsSoftDeleted;
+    const porFac = {};
+    for (const fila of resFac.recordset) porFac[String(fila.FacturaInterna)] = !!fila.IsSoftDeleted;
+
+    return facturas.map((factura) => {
+        const registroContable = factura in porRc ? { encontrada: true, anulada: porRc[factura] } : { encontrada: false, anulada: false };
+        const facturaTabla = factura in porFac ? { encontrada: true, anulada: porFac[factura] } : { encontrada: false, anulada: false };
+        return {
+            factura,
+            registroContable,
+            facturaTabla,
+            ok: registroContable.encontrada && registroContable.anulada && facturaTabla.encontrada && facturaTabla.anulada,
+        };
+    });
+}
+
+function describirEstado(estado) {
+    if (!estado.encontrada) return "no se encontró";
+    return estado.anulada ? "anulada" : "NO anulada";
+}
 
 app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async (req, res) => {
     try {
@@ -1474,7 +1608,22 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
             motivo: Observacion
         });
 
-        return res.status(200).json({ Message: "Factura(s) anulada(s) con éxito", Data: data });
+        let validacion = [];
+        let alertaEnviada = false;
+        try {
+            const poolVerificacion = await conexion(BasesDeDatos.CfoNetCore);
+            validacion = await verificarAnulacionCompleta(poolVerificacion, facturas);
+            const alertaPorFactura = procesarAlertaInconsistencias(
+                validacion,
+                `Motivo de la anulación: ${Observacion.trim()}`,
+                { nombre: req.user.nombreCompleto, correo: Correo }
+            );
+            alertaEnviada = Object.values(alertaPorFactura).some(Boolean);
+        } catch (errorValidacion) {
+            console.error("Error validando anulación en RegistroContable/Factura:", errorValidacion);
+        }
+
+        return res.status(200).json({ Message: "Factura(s) anulada(s) con éxito", Data: data, Validacion: validacion, AlertaEnviada: alertaEnviada });
 
     } catch (error) {
         console.error("Error en anularFacturas:", error);
@@ -4127,18 +4276,30 @@ const TIPOS_LINEA_MATERIAL_LOTE = {
     variable: { url: "https://cfows.azurewebsites.net/api/SalesOrder/UpdateLineaMaterialVariableList", label: "Material Variable" },
 };
 
+// Acepta una sola Referencia Operativa (referencia) o varias (referencias) -- cuando son
+// varias, junta las Líneas de Material de todas sus SalesOrder en una sola lista, cada fila
+// con su propia ReferenciaOperativa, para poder verlas/editarlas/eliminarlas juntas.
 app.post('/lineasMaterialPorReferencia', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
     try {
-        const { referencia } = req.body;
-        const referenciaTrim = (referencia || "").trim();
-        if (!referenciaTrim) {
+        const { referencia, referencias } = req.body;
+        const listaReferencias = [...new Set((Array.isArray(referencias) ? referencias : (referencia ? [referencia] : []))
+            .map((r) => String(r).trim()).filter(Boolean))];
+        if (listaReferencias.length === 0) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
-        const so = await pool.request()
-            .input('referencia', sql.VarChar, referenciaTrim)
-            .query(`SELECT [Id], [Status_Value] FROM [dbo].[SalesOrder] WHERE [ReferenciaOperativa] = @referencia AND [IsSoftDeleted] = 0`);
+        const requestSo = pool.request();
+        const parametrosSo = listaReferencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            requestSo.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        const so = await requestSo.query(`
+            SELECT [Id], [Status_Value], [ReferenciaOperativa]
+            FROM [dbo].[SalesOrder]
+            WHERE [ReferenciaOperativa] IN (${parametrosSo.join(", ")}) AND [IsSoftDeleted] = 0
+        `);
 
         if (so.recordset.length === 0) {
             return res.status(404).json({
@@ -4146,35 +4307,54 @@ app.post('/lineasMaterialPorReferencia', requirePermission('cfo', 'eliminarModif
                 NoExisteSalesOrder: true
             });
         }
-        const salesOrderId = so.recordset[0].Id;
 
-        const fijos = await pool.request()
-            .input('soId', sql.UniqueIdentifier, salesOrderId)
-            .query(`
-                SELECT LMF.[Id], LMF.[Descripcion], LMF.[MaterialErp], LMF.[Valor], LMF.[Costo], LMF.[Currency_Value], LMF.[Observacion], LMF.[CreatedDate]
-                FROM [dbo].[LineaMaterialFlat] LMF
-                JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LMF.[SalesOrderDetalleId]
-                WHERE SD.[SalesOrderId] = @soId AND LMF.[IsSoftDeleted] = 0
-                ORDER BY LMF.[Descripcion] ASC
-            `);
+        const referenciaPorSoId = {};
+        for (const fila of so.recordset) referenciaPorSoId[fila.Id] = fila.ReferenciaOperativa;
+        const salesOrderIds = so.recordset.map((f) => f.Id);
 
-        const variables = await pool.request()
-            .input('soId', sql.UniqueIdentifier, salesOrderId)
-            .query(`
-                SELECT LV.[Id], LV.[Descripcion], LV.[MaterialErp], LV.[Valor], LV.[Costo], LV.[Currency_Value], LV.[Observacion], LV.[CreatedDate]
-                FROM [dbo].[LineaMaterialVariable] LV
-                JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LV.[SalesOrderDetalleId]
-                WHERE SD.[SalesOrderId] = @soId AND LV.[IsSoftDeleted] = 0
-                ORDER BY LV.[Descripcion] ASC
-            `);
+        const requestFijos = pool.request();
+        const paramsFijos = salesOrderIds.map((id, i) => {
+            const nombre = `so${i}`;
+            requestFijos.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
+        });
+        const fijos = await requestFijos.query(`
+            SELECT LMF.[Id], LMF.[Descripcion], LMF.[MaterialErp], LMF.[Valor], LMF.[Costo], LMF.[Currency_Value], LMF.[Observacion], LMF.[CreatedDate], SD.[SalesOrderId]
+            FROM [dbo].[LineaMaterialFlat] LMF
+            JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LMF.[SalesOrderDetalleId]
+            JOIN [dbo].[SalesOrder] SO ON SO.[Id] = SD.[SalesOrderId]
+            WHERE SD.[SalesOrderId] IN (${paramsFijos.join(", ")}) AND LMF.[IsSoftDeleted] = 0
+            ORDER BY SO.[ReferenciaOperativa] ASC, LMF.[Descripcion] ASC
+        `);
 
-        const conMoneda = (filas) => filas.map((f) => ({ ...f, MonedaLabel: monedaLineaMaterialLabel(f.Currency_Value) }));
+        const requestVariables = pool.request();
+        const paramsVariables = salesOrderIds.map((id, i) => {
+            const nombre = `so${i}`;
+            requestVariables.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
+        });
+        const variables = await requestVariables.query(`
+            SELECT LV.[Id], LV.[Descripcion], LV.[MaterialErp], LV.[Valor], LV.[Costo], LV.[Currency_Value], LV.[Observacion], LV.[CreatedDate], SD.[SalesOrderId]
+            FROM [dbo].[LineaMaterialVariable] LV
+            JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LV.[SalesOrderDetalleId]
+            JOIN [dbo].[SalesOrder] SO ON SO.[Id] = SD.[SalesOrderId]
+            WHERE SD.[SalesOrderId] IN (${paramsVariables.join(", ")}) AND LV.[IsSoftDeleted] = 0
+            ORDER BY SO.[ReferenciaOperativa] ASC, LV.[Descripcion] ASC
+        `);
+
+        const conExtras = (filas) => filas.map((f) => ({
+            ...f,
+            MonedaLabel: monedaLineaMaterialLabel(f.Currency_Value),
+            ReferenciaOperativa: referenciaPorSoId[f.SalesOrderId] || null,
+        }));
+
+        const referenciasEncontradas = new Set(so.recordset.map((f) => f.ReferenciaOperativa));
+        const noEncontradas = listaReferencias.filter((r) => !referenciasEncontradas.has(r));
 
         return res.json({
-            SalesOrderId: salesOrderId,
-            StatusValue: so.recordset[0].Status_Value,
-            MaterialesFijos: conMoneda(fijos.recordset),
-            MaterialesVariables: conMoneda(variables.recordset),
+            MaterialesFijos: conExtras(fijos.recordset),
+            MaterialesVariables: conExtras(variables.recordset),
+            NoEncontradas: noEncontradas,
         });
 
     } catch (error) {
@@ -4480,6 +4660,16 @@ app.post('/eliminarLineaMaterial', requirePermission('cfo', 'eliminarModificarLi
 
 // Elimina varias Líneas de Material del mismo tipo (todas Fijas o todas Variables) de una sola
 // vez, con un único motivo compartido para todo el lote.
+// Azure rechaza el lote completo si se mandan más de 50 líneas de una vez ("Favor enviar
+// máximo 50 lineas", confirmado en producción con un lote de 54) -- se reparte en llamadas
+// de a lo sumo este tamaño en vez de fallar entero cuando el usuario selecciona más de 50.
+const LIMITE_LOTE_LINEA_MATERIAL = 50;
+function dividirEnLotes(arr, tam) {
+    const lotes = [];
+    for (let i = 0; i < arr.length; i += tam) lotes.push(arr.slice(i, i + tam));
+    return lotes;
+}
+
 app.post('/eliminarLineasMaterial', requirePermission('cfo', 'eliminarModificarLineaMaterial'), async (req, res) => {
     try {
         const { Tipo, Ids, ModifiedBy, Observacion } = req.body;
@@ -4499,46 +4689,106 @@ app.post('/eliminarLineasMaterial', requirePermission('cfo', 'eliminarModificarL
             return res.status(400).json({ Message: "Debe indicar la observación (motivo de la eliminación)." });
         }
 
-        const body = {
-            ModifiedBy,
-            Observacion: Observacion.trim(),
-            List: idsLista.map((id) => ({ Id: id, IsSoftDeleted: true }))
-        };
-
-        const resp = await fetch(tipo.url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(body)
+        // Azure rechaza con "No existen los lineaMaterial..." cualquier Id que ya esté
+        // IsSoftDeleted=1 de su lado -- pasa cuando la pantalla todavía muestra una línea que
+        // ya se eliminó en un intento anterior (ej. el primer lote de una división por 50 sí
+        // se aplicó, pero la pantalla no se refrescó). Se filtran aparte ANTES de llamar a
+        // Azure: esas ya están eliminadas de verdad, así que se reportan como tal sin
+        // intentar eliminarlas de nuevo (evita el error y limpia la vista igual).
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const tablaPorTipo = { fijo: "LineaMaterialFlat", variable: "LineaMaterialVariable" };
+        const requestEstado = pool.request();
+        const paramsEstado = idsLista.map((id, i) => {
+            const nombre = `id${i}`;
+            requestEstado.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
         });
+        const estadoActual = await requestEstado.query(`
+            SELECT [Id], [IsSoftDeleted] FROM [dbo].[${tablaPorTipo[Tipo]}] WHERE [Id] IN (${paramsEstado.join(", ")})
+        `);
+        const yaEliminadoPorId = {};
+        for (const fila of estadoActual.recordset) yaEliminadoPorId[String(fila.Id).toUpperCase()] = !!fila.IsSoftDeleted;
 
-        if (!resp.ok) {
-            const errData = await resp.text();
-            console.error(`${tipo.url} (eliminar lote) → HTTP ${resp.status} para ${idsLista.length} líneas:`, errData);
-            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        const idsYaEliminados = idsLista.filter((id) => yaEliminadoPorId[id.toUpperCase()] === true);
+        const idsPorEliminar = idsLista.filter((id) => yaEliminadoPorId[id.toUpperCase()] !== true);
+
+        const lotes = dividirEnLotes(idsPorEliminar, LIMITE_LOTE_LINEA_MATERIAL);
+        const idsEliminados = [...idsYaEliminados];
+        let ultimoError = null;
+
+        for (const lote of lotes) {
+            const body = {
+                ModifiedBy,
+                Observacion: Observacion.trim(),
+                List: lote.map((id) => ({ Id: id, IsSoftDeleted: true }))
+            };
+
+            const resp = await fetch(tipo.url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.text();
+                console.error(`${tipo.url} (eliminar lote) → HTTP ${resp.status} para ${lote.length} líneas:`, errData, "Ids:", JSON.stringify(lote));
+                ultimoError = errData;
+                break;
+            }
+
+            const data = await resp.json().catch(() => null);
+            console.log(`${tipo.url} (eliminar lote) → ${lote.length} líneas:`, JSON.stringify(data));
+
+            if (data?.IsValid === false) {
+                ultimoError = mensajeDeAzure(data) || "Azure rechazó la solicitud.";
+                break;
+            }
+
+            idsEliminados.push(...lote);
         }
 
-        const data = await resp.json().catch(() => null);
-        console.log(`${tipo.url} (eliminar lote) → ${idsLista.length} líneas:`, JSON.stringify(data));
-
-        if (data?.IsValid === false) {
-            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        const idsEliminadosAhora = idsEliminados.filter((id) => !idsYaEliminados.includes(id));
+        if (idsEliminadosAhora.length > 0) {
+            registrarActividad({
+                usuarioId: req.user.id,
+                usuarioNombre: req.user.nombreCompleto,
+                areaKey: "cfo",
+                areaLabel: "CFO",
+                moduloKey: "eliminarModificarLineaMaterial",
+                moduloLabel: "Eliminar y Modificar Línea Material",
+                accion: `Eliminó ${idsEliminadosAhora.length} ${tipo.label}(s) en lote`,
+                referencia: idsEliminadosAhora.join(", "),
+                motivo: Observacion
+            });
         }
 
-        registrarActividad({
-            usuarioId: req.user.id,
-            usuarioNombre: req.user.nombreCompleto,
-            areaKey: "cfo",
-            areaLabel: "CFO",
-            moduloKey: "eliminarModificarLineaMaterial",
-            moduloLabel: "Eliminar y Modificar Línea Material",
-            accion: `Eliminó ${idsLista.length} ${tipo.label}(s) en lote`,
-            referencia: idsLista.join(", "),
-            motivo: Observacion
-        });
+        const notaYaEliminados = idsYaEliminados.length > 0
+            ? ` (${idsYaEliminados.length} ya estaban eliminadas de un intento anterior)`
+            : "";
 
-        return res.status(200).json({ Message: `${idsLista.length} ${tipo.label}(s) eliminado(s) con éxito`, Data: data });
+        // Nada se eliminó (ni ahora ni antes): error real, se reporta como tal.
+        if (idsEliminados.length === 0 && ultimoError) {
+            return res.status(400).json({ Message: "Error al comunicarse con el servicio externo", Detail: ultimoError });
+        }
+
+        // Algunas líneas sí se eliminaron antes de que un lote posterior fallara -- se reporta
+        // como éxito parcial (200) en vez de error, para que el frontend sí refleje lo que ya
+        // se aplicó en vez de dejar la pantalla como si nada hubiera pasado.
+        if (ultimoError) {
+            return res.status(200).json({
+                Message: `Se eliminaron ${idsEliminados.length} de ${idsLista.length} línea(s)${notaYaEliminados}; el resto falló: ${typeof ultimoError === "string" ? ultimoError : JSON.stringify(ultimoError)}`,
+                IdsEliminados: idsEliminados,
+                Completo: false
+            });
+        }
+
+        return res.status(200).json({
+            Message: `${idsEliminados.length} ${tipo.label}(s) eliminado(s) con éxito${notaYaEliminados}`,
+            IdsEliminados: idsEliminados,
+            Completo: true
+        });
 
     } catch (error) {
         console.error("Error en eliminarLineasMaterial:", error);

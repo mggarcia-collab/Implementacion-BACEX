@@ -56,6 +56,18 @@ authDb.exec(`
     accion TEXT NOT NULL,
     created_date TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS alertas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL,
+    titulo TEXT NOT NULL,
+    mensaje TEXT NOT NULL,
+    referencia TEXT,
+    created_date TEXT NOT NULL DEFAULT (datetime('now')),
+    leida INTEGER NOT NULL DEFAULT 0,
+    leida_date TEXT
+  );
 `);
 
 // La tabla usuarios ya existía sin estas columnas; se agregan aparte porque
@@ -114,4 +126,53 @@ export function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabe
   } catch (error) {
     console.error("Error al registrar actividad:", error);
   }
+}
+
+// Usado para resolver, a partir de un correo fijo (ej. destinatarios de una alerta de
+// negocio), a qué usuario de BAC-EX le corresponde crearle la alerta dentro de la app.
+export function resolverUsuarioIdPorCorreo(correo) {
+  const fila = authDb.prepare(`SELECT id FROM usuarios WHERE correo = ?`).get(correo);
+  return fila?.id || null;
+}
+
+// Alertas dentro de la app (ej. widget de Inicio) para avisos que antes se pensaban mandar
+// por correo. No duplica: si ya existe una alerta sin leer del mismo tipo+referencia para
+// ese usuario, no crea otra -- así no se acumulan copias cada vez que se vuelve a detectar
+// lo mismo, hasta que la persona la marque como leída. Devuelve true si creó una alerta
+// nueva, false si ya existía una pendiente (o si falló).
+export function crearAlerta({ usuarioId, tipo, titulo, mensaje, referencia }) {
+  try {
+    const yaExiste = authDb
+      .prepare(`SELECT id FROM alertas WHERE usuario_id = ? AND tipo = ? AND referencia = ? AND leida = 0`)
+      .get(usuarioId, tipo, referencia || null);
+    if (yaExiste) return false;
+
+    authDb
+      .prepare(`INSERT INTO alertas (usuario_id, tipo, titulo, mensaje, referencia) VALUES (?, ?, ?, ?, ?)`)
+      .run(usuarioId, tipo, titulo, mensaje, referencia || null);
+    return true;
+  } catch (error) {
+    console.error("Error al crear alerta:", error);
+    return false;
+  }
+}
+
+export function obtenerAlertasPendientes(usuarioId) {
+  return authDb
+    .prepare(`SELECT * FROM alertas WHERE usuario_id = ? AND leida = 0 ORDER BY created_date DESC`)
+    .all(usuarioId);
+}
+
+export function marcarAlertaLeida(alertaId, usuarioId) {
+  authDb
+    .prepare(`UPDATE alertas SET leida = 1, leida_date = datetime('now') WHERE id = ? AND usuario_id = ?`)
+    .run(alertaId, usuarioId);
+}
+
+// Historial de alertas ya leídas (para poder revisarlas después, igual que la Bitácora
+// con la actividad). Ordenadas por cuándo se marcaron como leídas, no por cuándo se crearon.
+export function obtenerAlertasHistorial(usuarioId, limite = 50) {
+  return authDb
+    .prepare(`SELECT * FROM alertas WHERE usuario_id = ? AND leida = 1 ORDER BY leida_date DESC LIMIT ?`)
+    .all(usuarioId, limite);
 }

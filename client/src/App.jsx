@@ -7,6 +7,7 @@ import Login from "./auth/Login.jsx";
 import AdminUsuarios, { meta as adminUsuariosMeta } from "./auth/AdminUsuarios.jsx";
 import AdminBitacora, { meta as adminBitacoraMeta } from "./auth/AdminBitacora.jsx";
 import ActividadReciente from "./components/ActividadReciente.jsx";
+import AlertasCampana from "./components/AlertasCampana.jsx";
 
 const ADMIN_KEY = "__admin__";
 
@@ -163,7 +164,8 @@ function AppShell() {
             Inicio
           </button>
         </div>
-        <div className="topbar-right" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: "20px" }}>
+        <div className="topbar-right" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", paddingRight: "20px" }}>
+          <AlertasCampana />
           <div className="topbar-user" ref={userMenuRef}>
             <button className="topbar-user-trigger" onClick={() => setUserMenuOpen((prev) => !prev)}>
               <span className="topbar-user-name">{usuario.nombreCompleto}</span>

@@ -234,7 +234,7 @@ export default function Cuadrilla({ onNavigate }) {
   };
 
   return (
-    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "720px" }}>
+    <div className="form-wrap" style={{ position: "relative", zIndex: 1, maxWidth: "100%" }}>
       <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "25px" }}>
         <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>{meta.label}</div>
         <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>{meta.desc}</div>
@@ -266,30 +266,32 @@ export default function Cuadrilla({ onNavigate }) {
             <div style={{ fontSize: "12px", fontWeight: "700", color: "#9a3412", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
               ⚠️ Esta referencia ya tiene {cuadrillasExistentes.length} Cuadrilla{cuadrillasExistentes.length !== 1 ? "s" : ""} creada{cuadrillasExistentes.length !== 1 ? "s" : ""} antes
             </div>
-            <table className="doc-table" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  <th>Material</th>
-                  <th>Código ERP</th>
-                  <th style={{ textAlign: "right" }}>Valor</th>
-                  <th style={{ textAlign: "right" }}>Costo</th>
-                  <th>Moneda</th>
-                  <th>Fecha</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cuadrillasExistentes.map((l) => (
-                  <tr key={l.LineaMaterialId}>
-                    <td>{l.MaterialDescripcion}</td>
-                    <td>{l.MaterialErp}</td>
-                    <td style={{ textAlign: "right" }}>{l.Valor ?? "—"}</td>
-                    <td style={{ textAlign: "right" }}>{l.Costo ?? "—"}</td>
-                    <td>{l.MonedaLabel}</td>
-                    <td>{l.CreatedDate ? new Date(l.CreatedDate).toLocaleString("es-HN") : "—"}</td>
+            <div className="doc-table-wrap" style={{ maxHeight: "none" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>Código ERP</th>
+                    <th style={{ textAlign: "right" }}>Valor</th>
+                    <th style={{ textAlign: "right" }}>Costo</th>
+                    <th>Moneda</th>
+                    <th>Fecha</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {cuadrillasExistentes.map((l) => (
+                    <tr key={l.LineaMaterialId}>
+                      <td>{l.MaterialDescripcion}</td>
+                      <td>{l.MaterialErp}</td>
+                      <td style={{ textAlign: "right" }}>{l.Valor ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>{l.Costo ?? "—"}</td>
+                      <td>{l.MonedaLabel}</td>
+                      <td>{l.CreatedDate ? new Date(l.CreatedDate).toLocaleString("es-HN") : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -329,108 +331,114 @@ export default function Cuadrilla({ onNavigate }) {
               </div>
             </div>
 
-            <table className="doc-table" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  <th>Proveedor</th>
-                  <th>Cliente</th>
-                  <th>Tipo Documento</th>
-                  <th>Material</th>
-                  <th style={{ textAlign: "right" }}>Monto</th>
-                  <th style={{ textAlign: "right" }}>Precio Venta</th>
-                  <th>Moneda</th>
-                  <th>Fecha</th>
-                </tr>
-              </thead>
-              <tbody>
-                {documentosProvisionalesExistentes.map((d) => (
-                  <tr key={d.Id}>
-                    <td>{d.Proveedor || "—"}</td>
-                    <td>{d.Cliente || "—"}</td>
-                    <td>{d.Tipo_Documento || "—"}</td>
-                    <td>{d.MaterialProveedor || "—"}</td>
-                    <td style={{ textAlign: "right" }}>{d.Monto_Documento ?? "—"}</td>
-                    <td style={{ textAlign: "right" }}>{d.PrecioVenta ?? "—"}</td>
-                    <td>{d.MonedaLabel}</td>
-                    <td>{d.CreatedDate ? new Date(d.CreatedDate).toLocaleString("es-HN") : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {datosCuadrilla && (
-          <>
-            <div style={{ marginBottom: "16px" }}>
-              <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
-                Cuadrilla encontrada en la negociación — {datosCuadrilla.ComponenteDescripcion || "—"}
-              </div>
+            <div className="doc-table-wrap" style={{ maxHeight: "none" }}>
               <table className="doc-table" style={{ width: "100%" }}>
                 <thead>
                   <tr>
-                    <th style={{ width: "40px" }}></th>
-                    <th>Tipo de Revisión</th>
+                    <th>Proveedor</th>
+                    <th>Cliente</th>
+                    <th>Tipo Documento</th>
+                    <th>Material</th>
+                    <th style={{ textAlign: "right" }}>Monto</th>
+                    <th style={{ textAlign: "right" }}>Precio Venta</th>
                     <th>Moneda</th>
-                    <th style={{ textAlign: "right" }}>Valor</th>
-                    <th style={{ textAlign: "right" }}>Costo</th>
+                    <th>Fecha</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(datosCuadrilla.Escalas || []).map((e) => (
-                    <tr key={e.Orden}>
-                      <td>
-                        <input
-                          type="radio"
-                          name="escala"
-                          checked={ordenElegido === String(e.Orden)}
-                          onChange={() => setOrdenElegido(String(e.Orden))}
-                        />
-                      </td>
-                      <td>{e.Nombre}</td>
-                      <td>{datosCuadrilla.Moneda}</td>
-                      <td style={{ textAlign: "right" }}>{e.Valor ?? "—"}</td>
-                      <td style={{ textAlign: "right" }}>{e.Costo ?? "—"}</td>
+                  {documentosProvisionalesExistentes.map((d) => (
+                    <tr key={d.Id}>
+                      <td>{d.Proveedor || "—"}</td>
+                      <td>{d.Cliente || "—"}</td>
+                      <td>{d.Tipo_Documento || "—"}</td>
+                      <td>{d.MaterialProveedor || "—"}</td>
+                      <td style={{ textAlign: "right" }}>{d.Monto_Documento ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>{d.PrecioVenta ?? "—"}</td>
+                      <td>{d.MonedaLabel}</td>
+                      <td>{d.CreatedDate ? new Date(d.CreatedDate).toLocaleString("es-HN") : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
 
-            <div className="field" style={{ marginBottom: "12px" }}>
-              <label>Aduana (asignada automáticamente por el sistema)</label>
-              {aduanaKey ? (
-                <div style={{ padding: "10px 12px", border: "1px solid #86efac", background: "#f0fdf4", borderRadius: "6px", fontSize: "14px", color: "#166534", fontWeight: "700" }}>
-                  {aduanas.find((a) => a.key === aduanaKey)?.label}
+        {datosCuadrilla && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "16px", alignItems: "start" }}>
+              <div>
+                <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+                  Cuadrilla encontrada en la negociación — {datosCuadrilla.ComponenteDescripcion || "—"}
                 </div>
-              ) : (
-                <div style={{ padding: "10px 12px", border: "1px solid #fca5a5", background: "#fef2f2", borderRadius: "6px", fontSize: "14px", color: "#991b1b" }}>
-                  No se pudo determinar la Aduana automáticamente para esta referencia — no se puede crear hasta corregirlo.
-                </div>
-              )}
-              <div style={{ fontSize: "12px", color: "#a3acb9", marginTop: "4px" }}>
-                Texto de la Aduana según el sistema: {aduanaInfo?.AduanaDescripcion || "no se encontró"}
-                {aduanaInfo?.ClienteDescripcion && <> — Cliente: {aduanaInfo.ClienteDescripcion}</>}
+                <table className="doc-table" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: "40px" }}></th>
+                      <th>Tipo de Revisión</th>
+                      <th>Moneda</th>
+                      <th style={{ textAlign: "right" }}>Valor</th>
+                      <th style={{ textAlign: "right" }}>Costo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(datosCuadrilla.Escalas || []).map((e) => (
+                      <tr key={e.Orden}>
+                        <td>
+                          <input
+                            type="radio"
+                            name="escala"
+                            checked={ordenElegido === String(e.Orden)}
+                            onChange={() => setOrdenElegido(String(e.Orden))}
+                          />
+                        </td>
+                        <td>{e.Nombre}</td>
+                        <td>{datosCuadrilla.Moneda}</td>
+                        <td style={{ textAlign: "right" }}>{e.Valor ?? "—"}</td>
+                        <td style={{ textAlign: "right" }}>{e.Costo ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </div>
 
-            <div style={{
-              display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
-              background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
-              padding: "12px 14px", marginBottom: "16px"
-            }}>
-              <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "220px" }}>
-                ⚠️ Si esta Referencia Operativa está asignada a una Aduana incorrecta, debe hacer
-                <strong> Cambio de Componente</strong> antes de crear la Cuadrilla.
-              </span>
-              <button
-                type="button"
-                className="btn danger"
-                onClick={() => onNavigate?.("cfo", "cambio")}
-                style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
-              >
-                Ir a Cambio de Componente
-              </button>
+              <div>
+                <div className="field" style={{ marginBottom: "12px" }}>
+                  <label>Aduana (asignada automáticamente por el sistema)</label>
+                  {aduanaKey ? (
+                    <div style={{ padding: "10px 12px", border: "1px solid #86efac", background: "#f0fdf4", borderRadius: "6px", fontSize: "14px", color: "#166534", fontWeight: "700" }}>
+                      {aduanas.find((a) => a.key === aduanaKey)?.label}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "10px 12px", border: "1px solid #fca5a5", background: "#fef2f2", borderRadius: "6px", fontSize: "14px", color: "#991b1b" }}>
+                      No se pudo determinar la Aduana automáticamente para esta referencia — no se puede crear hasta corregirlo.
+                    </div>
+                  )}
+                  <div style={{ fontSize: "12px", color: "#a3acb9", marginTop: "4px" }}>
+                    Texto de la Aduana según el sistema: {aduanaInfo?.AduanaDescripcion || "no se encontró"}
+                    {aduanaInfo?.ClienteDescripcion && <> — Cliente: {aduanaInfo.ClienteDescripcion}</>}
+                  </div>
+                </div>
+
+                <div style={{
+                  display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+                  background: "#fff7ed", border: "1px solid #fdba74", borderRadius: "8px",
+                  padding: "12px 14px"
+                }}>
+                  <span style={{ color: "#9a3412", fontSize: "13px", flex: 1, minWidth: "220px" }}>
+                    ⚠️ Si esta Referencia Operativa está asignada a una Aduana incorrecta, debe hacer
+                    <strong> Cambio de Componente</strong> antes de crear la Cuadrilla.
+                  </span>
+                  <button
+                    type="button"
+                    className="btn danger"
+                    onClick={() => onNavigate?.("cfo", "cambio")}
+                    style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
+                  >
+                    Ir a Cambio de Componente
+                  </button>
+                </div>
+              </div>
             </div>
 
             <button className="btn primary" type="button" onClick={handleCrear} disabled={creando || !aduanaKey || !escalaElegida}>

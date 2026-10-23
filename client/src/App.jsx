@@ -76,6 +76,10 @@ function AppShell() {
   // Qué área quedó "abierta" dentro de las tarjetas de acceso directo de Inicio,
   // para mostrar sus submódulos ahí mismo en vez de mandar a mirar el sidebar.
   const [homeAreaKey, setHomeAreaKey] = useState(null);
+  // Si el área tiene "groups" (ej. CFO), qué grupo quedó abierto dentro de Inicio -- un nivel
+  // intermedio entre el área y sus módulos, para que la pantalla no se vea tan llena cuando
+  // hay muchos módulos (se navega Área → Grupo → Módulo en vez de Área → Módulo directo).
+  const [homeGroupLabel, setHomeGroupLabel] = useState(null);
 
   const toggleAreaExpand = (areaKey) => {
     setExpandedAreas((prev) => {
@@ -292,6 +296,61 @@ function AppShell() {
 
                 if (areaAbierta) {
                   const [areaKey, area] = areaAbierta;
+
+                  // Si el área agrupa sus módulos (ej. CFO), se navega Área → Grupo → Módulo en
+                  // vez de mostrar los 14+ módulos de una sola vez; áreas sin "groups" (ej. HR)
+                  // siguen mostrando sus módulos directo, como antes.
+                  if (area.groups) {
+                    const grupoAbierto = area.groups.find((g) => g.label === homeGroupLabel);
+
+                    if (grupoAbierto) {
+                      const modulosDelGrupo = grupoAbierto.modules.filter((k) => area.modules[k]);
+                      return (
+                        <div style={{ position: "relative", zIndex: 1 }}>
+                          <button className="back-btn" onClick={() => setHomeGroupLabel(null)} style={{ marginBottom: "12px" }}>← {grupoAbierto.label}</button>
+                          <div className="home-grid">
+                            {modulosDelGrupo.map((moduloKey) => {
+                              const modulo = area.modules[moduloKey];
+                              return (
+                                <div
+                                  key={moduloKey}
+                                  className={`home-card${modulo.kind === "danger" ? " danger" : ""}`}
+                                  onClick={() => handleSelectModule(areaKey, moduloKey)}
+                                >
+                                  <div className={`card-icon${modulo.kind === "danger" ? " red" : ""}`}>{modulo.icon}</div>
+                                  <h4>{modulo.label}</h4>
+                                  <p>{modulo.desc}</p>
+                                  <div className="card-arr">→</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div style={{ position: "relative", zIndex: 1 }}>
+                        <button className="back-btn" onClick={() => setHomeAreaKey(null)} style={{ marginBottom: "12px" }}>← {area.label}</button>
+                        <div className="home-grid">
+                          {area.groups.map((grupo) => {
+                            const modulosDelGrupo = grupo.modules.filter((k) => area.modules[k]);
+                            if (modulosDelGrupo.length === 0) return null;
+                            const iconoGrupo = area.modules[modulosDelGrupo[0]]?.icon || "📁";
+                            return (
+                              <div key={grupo.label} className="home-card" onClick={() => setHomeGroupLabel(grupo.label)}>
+                                <div className="card-icon">{iconoGrupo}</div>
+                                <h4>{grupo.label}</h4>
+                                <p>{modulosDelGrupo.length} módulo{modulosDelGrupo.length !== 1 ? "s" : ""}</p>
+                                <div className="card-arr">→</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div style={{ position: "relative", zIndex: 1 }}>
                       <button className="back-btn" onClick={() => setHomeAreaKey(null)} style={{ marginBottom: "12px" }}>← {area.label}</button>
@@ -316,7 +375,7 @@ function AppShell() {
                 return (
                   <div className="home-grid" style={{ position: "relative", zIndex: 1 }}>
                     {todasAreas.map(([areaKey, area]) => (
-                      <div key={areaKey} className="home-card" onClick={() => setHomeAreaKey(areaKey)}>
+                      <div key={areaKey} className="home-card" onClick={() => { setHomeAreaKey(areaKey); setHomeGroupLabel(null); }}>
                         <div className="card-icon">{area.icon || "👤"}</div>
                         <h4>{area.label}</h4>
                         <p>{Object.keys(area.modules).length} módulo{Object.keys(area.modules).length !== 1 ? "s" : ""}</p>

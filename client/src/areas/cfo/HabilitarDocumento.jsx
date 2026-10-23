@@ -4,7 +4,7 @@ import { apiFetch } from "../../apiClient.js";
 import { useAutorizadorActual } from "./useAutorizadorActual.js";
 
 export const meta = {
-  label: "Habilitar Documento",
+  label: "Habilitar Documentos (Nota de Reembolso)",
   icon: "✅",
   desc: "Buscar y habilitar documentos",
   kind: "primary",

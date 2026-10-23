@@ -217,6 +217,137 @@ app.post('/getCliente', requirePermission('cfo', 'salesorder'), async (req, res)
     }
 });
 
+// [dbo].[SalesOrder].[IndicadorImpuestoCabecera] se guarda como texto, no booleano real, y con
+// valores inconsistentes vistos en datos reales: "1"/"0" (la gran mayoría), pero también "true"
+// y el string literal "null" (no NULL de SQL). Se normaliza a 0/1/null para no arrastrar esa
+// inconsistencia a la pantalla.
+function normalizarIndicadorImpuesto(valor) {
+    const texto = String(valor ?? "").trim().toLowerCase();
+    if (texto === "1" || texto === "true") return { Valor: 1, Label: "Aplica" };
+    if (texto === "0" || texto === "false") return { Valor: 0, Label: "No aplica" };
+    return { Valor: null, Label: "Sin definir" };
+}
+
+app.post('/buscarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicadorImpuesto'), async (req, res) => {
+    try {
+        const referencias = normalizarLista(req.body.referencias, req.body.referencia);
+        if (referencias.length === 0) {
+            return res.status(400).json({ Message: "Ingrese al menos una Referencia Operativa." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const request = pool.request();
+        const parametros = referencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        const resultado = await request.query(`
+            SELECT [ReferenciaOperativa], [IndicadorImpuestoCabecera], [Status_Value]
+            FROM [dbo].[SalesOrder]
+            WHERE [ReferenciaOperativa] IN (${parametros.join(", ")}) AND [IsSoftDeleted] = 0
+        `);
+
+        const encontradas = new Set(resultado.recordset.map((r) => r.ReferenciaOperativa));
+        const filas = resultado.recordset.map((r) => {
+            const { Valor, Label } = normalizarIndicadorImpuesto(r.IndicadorImpuestoCabecera);
+            return {
+                ReferenciaOperativa: r.ReferenciaOperativa,
+                IndicadorValor: Valor,
+                IndicadorLabel: Label,
+                StatusValue: r.Status_Value
+            };
+        });
+        const noEncontradas = referencias.filter((r) => !encontradas.has(r));
+
+        return res.json({ Filas: filas, NoEncontradas: noEncontradas });
+    } catch (error) {
+        console.error("Error en buscarIndicadorImpuestoSalesOrder:", error);
+        return res.status(500).json({ Message: "Error al buscar las Sales Order", Error: error.message });
+    }
+});
+
+// Sub-permiso del mismo módulo (no es una pantalla aparte, ver meta.subPermiso en
+// IndicadorImpuestoSalesOrder.jsx): el permiso base "indicadorImpuesto" solo da acceso a
+// consultar; aplicar el cambio requiere además "indicadorImpuestoModificar".
+app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicadorImpuestoModificar'), async (req, res) => {
+    try {
+        const referencias = normalizarLista(req.body.referencias, req.body.referencia);
+        const { Indicador, ModifiedBy } = req.body;
+
+        if (referencias.length === 0) {
+            return res.status(400).json({ Message: "Ingrese al menos una Referencia Operativa." });
+        }
+        if (Indicador !== 0 && Indicador !== 1) {
+            return res.status(400).json({ Message: "Debe seleccionar si el Indicador de Impuesto aplica o no." });
+        }
+        if (!ModifiedBy) {
+            return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        // Revalida justo antes de aplicar (no confiar solo en la búsqueda que ya se hizo en
+        // pantalla) para no mandarle a Azure referencias que ya no existen o se eliminaron.
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const request = pool.request();
+        const parametros = referencias.map((valor, i) => {
+            const nombre = `ref${i}`;
+            request.input(nombre, sql.VarChar, valor);
+            return `@${nombre}`;
+        });
+        const validacion = await request.query(`
+            SELECT [ReferenciaOperativa]
+            FROM [dbo].[SalesOrder]
+            WHERE [ReferenciaOperativa] IN (${parametros.join(", ")}) AND [IsSoftDeleted] = 0
+        `);
+        const encontradas = validacion.recordset.map((r) => r.ReferenciaOperativa);
+        const noEncontradas = referencias.filter((r) => !encontradas.includes(r));
+
+        if (encontradas.length === 0) {
+            return res.status(404).json({ Message: "No se encontró ninguna de las Sales Order indicadas.", NoEncontradas: noEncontradas });
+        }
+
+        const resp = await fetch("https://cfows.azurewebsites.net/api/SalesOrder/UpdateIndicador", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ IndicadorImpuestoCabecera: Indicador, SalesOrder: encontradas })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.text();
+            console.error(`SalesOrder/UpdateIndicador → HTTP ${resp.status} para ${JSON.stringify(encontradas)}:`, errData);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+        }
+
+        const data = await resp.json().catch(() => null);
+        console.log(`SalesOrder/UpdateIndicador → ${JSON.stringify(encontradas)}:`, JSON.stringify(data));
+
+        if (data?.IsValid === false) {
+            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+        }
+
+        registrarActividad({
+            usuarioId: req.user.id,
+            usuarioNombre: req.user.nombreCompleto,
+            areaKey: "cfo",
+            areaLabel: "CFO",
+            moduloKey: "indicadorImpuesto",
+            moduloLabel: "Indicador de Impuesto",
+            accion: `Aplicó Indicador de Impuesto "${Indicador === 1 ? "Aplica" : "No aplica"}" a ${encontradas.length} Sales Order`,
+            referencia: encontradas.join(", ")
+        });
+
+        return res.status(200).json({
+            Message: `Indicador de Impuesto aplicado con éxito a ${encontradas.length} Sales Order.`,
+            Data: data,
+            Aplicadas: encontradas,
+            NoEncontradas: noEncontradas
+        });
+    } catch (error) {
+        console.error("Error en aplicarIndicadorImpuestoSalesOrder:", error);
+        return res.status(500).json({ Message: "Error interno del servidor", Error: error.message });
+    }
+});
+
 app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (req, res) => {
     try {
         const { referencia, referencias, sp, sps, documentoFiscal, documentosFiscales, documentoSap, documentosSap, codigoErp } = req.body;
@@ -4836,6 +4967,41 @@ app.post('/docProvisionalBuscarProveedores', requirePermission('cfo', 'crearDocu
     }
 });
 
+// Búsqueda de Persona SIN filtrar por Discriminator (a diferencia de docProvisionalBuscarProveedores,
+// aquí puede ser cualquier persona, no solo un Proveedor): para elegir a nombre de quién debe
+// aparecer en pantalla el Documento (CreatedBy / SolicitanteDocumentoId), que no siempre es
+// quien está autorizando la acción en BAC-EX. Mismo query que especieFiscalBuscarPersonas.
+app.post('/documentosPostFacturacionBuscarPersonas', requirePermission('cfo', 'crearDocumentosPostFacturacion'), async (req, res) => {
+    try {
+        const nombreTrim = (req.body.nombre || "").trim();
+        if (!nombreTrim) {
+            return res.status(400).json({ Message: "Ingrese un nombre para buscar." });
+        }
+        const pool = await conexion(BasesDeDatos.Personas);
+        const resultado = await pool.request()
+            .input('nombre', sql.VarChar, `%${nombreTrim}%`)
+            .query(`
+                SELECT TOP 15
+                    Id AS PersonaId,
+                    CASE
+                        WHEN Apellido IS NOT NULL AND LTRIM(RTRIM(Apellido)) <> ''
+                             AND CHARINDEX(UPPER(LTRIM(RTRIM(Apellido))), UPPER(Nombre)) = 0
+                        THEN Nombre + ' ' + Apellido
+                        ELSE Nombre
+                    END AS Nombre,
+                    IdFiscal
+                FROM [dbo].[Persona]
+                WHERE IsSoftDeleted = 0
+                  AND Nombre LIKE @nombre
+                ORDER BY Nombre
+            `);
+        return res.json(resultado.recordset);
+    } catch (error) {
+        console.error("Error en documentosPostFacturacionBuscarPersonas:", error);
+        return res.status(500).json({ Message: "Error al buscar Personas", Error: error.message });
+    }
+});
+
 // Resuelve el Cliente (dbo.Cliente en CFO) de una Referencia Operativa: primero se busca en
 // HojaDeRuta (su ClienteId ahí ES directamente el PersonaId real — confirmado contra datos
 // reales, no hace falta cruzar por nombre) y luego se busca la fila de CFO para ese
@@ -4988,7 +5154,11 @@ app.post('/crearDocumentoProvisionalPostFacturacion', requirePermission('cfo', '
                     PaisId: pais.paisId,
                     DueñoDocumento: Number(DuenoDocumento),
                     Division: pais.division,
-                    ProveedorId: datosProveedor.ProveedorId,
+                    // El API espera aquí el Id crudo de la Persona (Personas.dbo.Persona.Id), no
+                    // el Id interno de CfoNetCore.dbo.Proveedor -- mismo caso confirmado en
+                    // MaterialProveedor/Create: mandar el Id de Proveedor en CFO da "No existe
+                    // proveedor" aunque el Proveedor sí exista para ese Tenant.
+                    ProveedorId: ProveedorPersonaId,
                     ClienteId: datosCliente.ClienteId,
                     CreatedBy,
                     DocumentoProvisionalDetalles: [{
@@ -5104,7 +5274,9 @@ app.post('/crearDocumentoFiscalPostFacturacion', requirePermission('cfo', 'crear
                     PaisId: pais.paisId,
                     DueñoDocumento: Number(DuenoDocumento),
                     Division: pais.division,
-                    ProveedorId: datosProveedor.ProveedorId,
+                    // Ver nota en DocumentoProvisional/CreateMany: el API espera el Id crudo de
+                    // Personas.dbo.Persona, no el Id interno de CfoNetCore.dbo.Proveedor.
+                    ProveedorId: ProveedorPersonaId,
                     ClienteId: datosCliente.ClienteId,
                     CreatedBy,
                     DocumentoFiscalDetalles: [{
@@ -5224,7 +5396,9 @@ app.post('/crearDocumentoInternoPostFacturacion', requirePermission('cfo', 'crea
                     Moneda: Number(Moneda),
                     Observacion: observacionTrim,
                     PaisId: pais.paisId,
-                    ProveedorId: datosProveedor.ProveedorId,
+                    // Ver nota en DocumentoProvisional/CreateMany: el API espera el Id crudo de
+                    // Personas.dbo.Persona, no el Id interno de CfoNetCore.dbo.Proveedor.
+                    ProveedorId: ProveedorPersonaId,
                     ClienteId: datosCliente.ClienteId,
                     CreatedBy,
                     TenantId: pais.tenantId,

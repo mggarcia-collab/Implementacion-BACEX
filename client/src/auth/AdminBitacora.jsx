@@ -43,9 +43,10 @@ export default function AdminBitacora() {
   }, [actividades]);
 
   // Lista de módulos: el catálogo completo de módulos existentes en la app
-  // (no solo los que ya tienen actividad), para poder filtrar por cualquiera.
+  // (no solo los que ya tienen actividad), para poder filtrar por cualquiera. "Inicio de
+  // Sesión" no es un módulo real (no vive en ninguna área), se agrega aparte a mano.
   const modulosDisponibles = useMemo(() => {
-    const etiquetas = new Set([adminUsuariosMeta.label]);
+    const etiquetas = new Set([adminUsuariosMeta.label, "Inicio de Sesión"]);
     Object.values(areas).forEach((area) => {
       Object.values(area.modules).forEach((modulo) => etiquetas.add(modulo.label));
     });

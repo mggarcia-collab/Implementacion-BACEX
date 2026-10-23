@@ -12,6 +12,8 @@ import CrearProveedorCliente, { meta as crearProveedorClienteMeta } from "./Crea
 import EliminarModificarLineaMaterial, { meta as eliminarModificarLineaMaterialMeta } from "./EliminarModificarLineaMaterial.jsx";
 import CrearDocumentosPostFacturacion, { meta as crearDocumentosPostFacturacionMeta } from "./CrearDocumentosPostFacturacion.jsx";
 import CrearEspecieFiscal, { meta as crearEspecieFiscalMeta } from "./CrearEspecieFiscal.jsx";
+import CajaChica, { meta as cajaChicaMeta } from "./CajaChica.jsx";
+import IndicadorImpuestoSalesOrder, { meta as indicadorImpuestoMeta } from "./IndicadorImpuestoSalesOrder.jsx";
 
 export const label = "CFO / Finanzas";
 export const icon = "📊";
@@ -31,12 +33,18 @@ export const modules = {
   eliminarModificarLineaMaterial: { ...eliminarModificarLineaMaterialMeta, Component: EliminarModificarLineaMaterial },
   crearDocumentosPostFacturacion: { ...crearDocumentosPostFacturacionMeta, Component: CrearDocumentosPostFacturacion },
   crearEspecieFiscal: { ...crearEspecieFiscalMeta, Component: CrearEspecieFiscal },
+  cajaChica: { ...cajaChicaMeta, Component: CajaChica },
+  indicadorImpuesto: { ...indicadorImpuestoMeta, Component: IndicadorImpuestoSalesOrder },
 };
 
 // Agrupa los módulos de CFO en el sidebar para que no se vean como una lista plana larga.
+// "Documentos" se separó en Crear vs Modificar (eran 6 módulos juntos) y Línea Material se
+// movió de Eliminación a Modificar Documentos, ya que ese módulo agrega y edita, no solo elimina.
 export const groups = [
   { label: "Gestión", modules: ["negociaciones", "cambio", "salesorder"] },
-  { label: "Documentos", modules: ["habDoc", "redondeo", "docProvisionalNic", "cuadrilla", "crearDocumentosPostFacturacion", "crearEspecieFiscal"] },
-  { label: "Eliminación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas", "eliminarModificarLineaMaterial"] },
+  { label: "Crear Documentos", modules: ["docProvisionalNic", "cuadrilla", "crearDocumentosPostFacturacion", "crearEspecieFiscal"] },
+  { label: "Modificar Documentos", modules: ["habDoc", "redondeo", "eliminarModificarLineaMaterial", "indicadorImpuesto"] },
+  { label: "Eliminación / Anulación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas"] },
   { label: "Catálogos", modules: ["crearProveedorCliente"] },
+  { label: "Administración", modules: ["cajaChica"] },
 ];

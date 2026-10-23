@@ -15,7 +15,13 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
   const autorizadorActual = useAutorizadorActual();
   const autorizador = autorizadorActual?.id || "";
   const [resultado, setResultado] = useState(null);
-  const [procesando, setProcesando] = useState(false);
+  // Cada botón tiene su propio estado de "procesando" (en vez de uno solo compartido)
+  // para que al evaluar no parezca que "Actualizar Estado" también está trabajando, y
+  // viceversa. Mientras cualquiera de los dos corre, ambos quedan deshabilitados para
+  // no disparar dos acciones a la vez sobre la misma Referencia Operativa.
+  const [procesandoActualizar, setProcesandoActualizar] = useState(false);
+  const [procesandoEvaluar, setProcesandoEvaluar] = useState(false);
+  const procesando = procesandoActualizar || procesandoEvaluar;
   const showToast = useToast();
 
   if (referenciasOperativas.length === 0) {
@@ -37,7 +43,7 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
       return;
     }
 
-    setProcesando(true);
+    setProcesandoActualizar(true);
     setResultado(null);
     try {
       const resp = await apiFetch(`/actualizarHaSidoEvaluado`, {
@@ -59,7 +65,7 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
-      setProcesando(false);
+      setProcesandoActualizar(false);
     }
   };
 
@@ -76,7 +82,7 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
       return;
     }
 
-    setProcesando(true);
+    setProcesandoEvaluar(true);
     setResultado(null);
     try {
       // El servicio externo rechaza evaluar una referencia que sigue marcada como ya
@@ -114,7 +120,7 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
-      setProcesando(false);
+      setProcesandoEvaluar(false);
     }
   };
 
@@ -163,11 +169,11 @@ export default function EvaluarReferenciaOperativa({ referenciasOperativas = [],
         </div>
 
         <button className="btn soft" onClick={handleActualizar} disabled={procesando} style={{ padding: "9px 18px", fontSize: "13px" }}>
-          {procesando ? "Procesando..." : "Actualizar Estado"}
+          {procesandoActualizar ? "Procesando..." : "Actualizar Estado"}
         </button>
 
         <button className="btn primary" onClick={handleEvaluar} disabled={procesando} style={{ padding: "9px 18px", fontSize: "13px" }}>
-          {procesando ? "Procesando..." : "Evaluar"}
+          {procesandoEvaluar ? "Procesando..." : "Evaluar"}
         </button>
       </div>
 

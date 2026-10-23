@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useToast } from "../../components/Toast.jsx";
 import { apiFetch } from "../../apiClient.js";
 import { useAutorizadorActual } from "./useAutorizadorActual.js";
@@ -102,6 +102,16 @@ function TabProvisionales({ onNavigate }) {
   const autorizador = autorizadorActual?.id || "";
   const showToast = useToast();
 
+  // A nombre de quién debe aparecer el Documento en pantalla (CreatedBy / SolicitanteDocumentoId
+  // en el JSON que recibe Azure) -- no siempre es quien está autorizando la acción en BAC-EX
+  // (campo "Autorizado por" de abajo, que se sigue usando para Eliminar), así que es una
+  // búsqueda aparte contra Personas, igual que en Crear Especie Fiscal.
+  const [personaPantallaBusqueda, setPersonaPantallaBusqueda] = useState("");
+  const [buscandoPersonasPantalla, setBuscandoPersonasPantalla] = useState(false);
+  const [personasPantallaResultados, setPersonasPantallaResultados] = useState([]);
+  const [personaPantallaSeleccionada, setPersonaPantallaSeleccionada] = useState(null);
+  const ultimaSeleccionPantallaRef = useRef("");
+
   const resetDesdeReferencia = () => {
     setClienteInfo(null);
     setClienteError(null);
@@ -119,6 +129,43 @@ function TabProvisionales({ onNavigate }) {
     setResultado(null);
     setEliminando(false);
     setEliminado(false);
+    setPersonaPantallaBusqueda("");
+    setPersonasPantallaResultados([]);
+    setPersonaPantallaSeleccionada(null);
+  };
+
+  // Autocompletado sin botón "Buscar", con debounce para no disparar una consulta por tecla.
+  useEffect(() => {
+    const nombreTrim = personaPantallaBusqueda.trim();
+    if (nombreTrim.length < 2 || nombreTrim === ultimaSeleccionPantallaRef.current) {
+      setPersonasPantallaResultados([]);
+      setBuscandoPersonasPantalla(false);
+      return;
+    }
+    setBuscandoPersonasPantalla(true);
+    const timer = setTimeout(async () => {
+      try {
+        const resp = await apiFetch(`/documentosPostFacturacionBuscarPersonas`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nombre: nombreTrim })
+        });
+        const data = await resp.json().catch(() => null);
+        setPersonasPantallaResultados(resp.ok && Array.isArray(data) ? data : []);
+      } catch (error) {
+        setPersonasPantallaResultados([]);
+      } finally {
+        setBuscandoPersonasPantalla(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [personaPantallaBusqueda]);
+
+  const handleSeleccionarPersonaPantalla = (p) => {
+    setPersonaPantallaSeleccionada(p);
+    setPersonasPantallaResultados([]);
+    ultimaSeleccionPantallaRef.current = p.Nombre;
+    setPersonaPantallaBusqueda(p.Nombre);
   };
 
   const handleBuscarReferencia = async () => {
@@ -263,6 +310,10 @@ function TabProvisionales({ onNavigate }) {
       showToast("Seleccione un Material", "warn");
       return;
     }
+    if (!personaPantallaSeleccionada?.PersonaId) {
+      showToast("Indique a nombre de quién debe aparecer el Documento en pantalla", "warn");
+      return;
+    }
     if (!observacionTrim) {
       showToast("La Observación es requerida", "warn");
       return;
@@ -291,7 +342,8 @@ function TabProvisionales({ onNavigate }) {
       `Referencia: ${referenciaTrim}\nPaís: ${PAISES[paisKey]?.label}\nCliente: ${clienteInfo.ClienteDescripcion}\n` +
       `Proveedor: ${proveedorSeleccionado.Nombre}\nMaterial: ${material?.Descripcion || "—"}\n` +
       `Cantidad: ${cantidadNum}   Precio Venta: ${precioVentaNum}   Impuesto: ${impuestoNum}   Total: ${total}\n` +
-      `Moneda: ${monedaLabel}\nObservación: ${observacionTrim}`
+      `Moneda: ${monedaLabel}\nObservación: ${observacionTrim}\n` +
+      `Aparece en pantalla a nombre de: ${personaPantallaSeleccionada.Nombre}`
     )) {
       return;
     }
@@ -312,7 +364,7 @@ function TabProvisionales({ onNavigate }) {
           Cantidad: cantidadNum,
           PrecioVenta: precioVentaNum,
           Impuesto: impuestoNum,
-          CreatedBy: autorizador
+          CreatedBy: personaPantallaSeleccionada.PersonaId
         })
       });
       const data = await resp.json().catch(() => null);
@@ -321,7 +373,11 @@ function TabProvisionales({ onNavigate }) {
         return;
       }
       showToast(data?.Message || "✓ Documento Provisional creado con éxito", "ok");
-      setResultado(extraerDocumento(data?.Data));
+      // Azure a veces devuelve en este JSON un ReferenciaOperativa que no es el que realmente
+      // se usó (confirmado contra la base de datos: el documento queda bien creado, pero el
+      // eco de la respuesta trae otra referencia) -- se sobreescribe con la que de verdad se
+      // envió para no mostrar un resumen engañoso.
+      setResultado({ ...extraerDocumento(data?.Data), ReferenciaOperativa: referenciaTrim });
       setEliminado(false);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
@@ -642,6 +698,57 @@ function TabProvisionales({ onNavigate }) {
         </div>
       )}
 
+      {clienteInfo && (
+        <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>
+            Indique el nombre de la persona que debe aparecer en pantalla
+          </div>
+          <div style={{ marginBottom: "10px" }}>
+            <input
+              type="text"
+              placeholder="Empiece a escribir el nombre..."
+              value={personaPantallaBusqueda}
+              onChange={(e) => setPersonaPantallaBusqueda(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+            />
+            {buscandoPersonasPantalla && <p style={{ fontSize: "12px", color: "#697386", margin: "6px 0 0" }}>Buscando...</p>}
+          </div>
+
+          {personasPantallaResultados.length > 0 && (
+            <div className="doc-table-wrap" style={{ marginBottom: "10px", maxHeight: "220px" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th>ID Fiscal</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {personasPantallaResultados.map((p) => (
+                    <tr key={p.PersonaId}>
+                      <td>{p.Nombre}</td>
+                      <td>{p.IdFiscal}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="btn soft" type="button" onClick={() => handleSeleccionarPersonaPantalla(p)} style={{ padding: "4px 10px", fontSize: "12px" }}>
+                          Seleccionar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {personaPantallaSeleccionada && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "12px 16px", color: "#166534", fontSize: "13px" }}>
+              ✓ Aparecerá en pantalla a nombre de: <strong>{personaPantallaSeleccionada.Nombre}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
       {proveedorCfoInfo && (
         <button className="btn primary" type="button" onClick={handleCrear} disabled={creando} style={{ marginBottom: "20px" }}>
           {creando ? "Creando..." : "Crear Documento Provisional"}
@@ -744,6 +851,13 @@ function TabFiscales({ onNavigate }) {
   const autorizador = autorizadorActual?.id || "";
   const showToast = useToast();
 
+  // A nombre de quién debe aparecer el Documento en pantalla (ver nota en TabProvisionales).
+  const [personaPantallaBusqueda, setPersonaPantallaBusqueda] = useState("");
+  const [buscandoPersonasPantalla, setBuscandoPersonasPantalla] = useState(false);
+  const [personasPantallaResultados, setPersonasPantallaResultados] = useState([]);
+  const [personaPantallaSeleccionada, setPersonaPantallaSeleccionada] = useState(null);
+  const ultimaSeleccionPantallaRef = useRef("");
+
   const resetDesdeReferencia = () => {
     setClienteInfo(null);
     setClienteError(null);
@@ -765,6 +879,42 @@ function TabFiscales({ onNavigate }) {
     setResultado(null);
     setEliminando(false);
     setEliminado(false);
+    setPersonaPantallaBusqueda("");
+    setPersonasPantallaResultados([]);
+    setPersonaPantallaSeleccionada(null);
+  };
+
+  useEffect(() => {
+    const nombreTrim = personaPantallaBusqueda.trim();
+    if (nombreTrim.length < 2 || nombreTrim === ultimaSeleccionPantallaRef.current) {
+      setPersonasPantallaResultados([]);
+      setBuscandoPersonasPantalla(false);
+      return;
+    }
+    setBuscandoPersonasPantalla(true);
+    const timer = setTimeout(async () => {
+      try {
+        const resp = await apiFetch(`/documentosPostFacturacionBuscarPersonas`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nombre: nombreTrim })
+        });
+        const data = await resp.json().catch(() => null);
+        setPersonasPantallaResultados(resp.ok && Array.isArray(data) ? data : []);
+      } catch (error) {
+        setPersonasPantallaResultados([]);
+      } finally {
+        setBuscandoPersonasPantalla(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [personaPantallaBusqueda]);
+
+  const handleSeleccionarPersonaPantalla = (p) => {
+    setPersonaPantallaSeleccionada(p);
+    setPersonasPantallaResultados([]);
+    ultimaSeleccionPantallaRef.current = p.Nombre;
+    setPersonaPantallaBusqueda(p.Nombre);
   };
 
   const handleBuscarReferencia = async () => {
@@ -911,6 +1061,10 @@ function TabFiscales({ onNavigate }) {
       showToast("Seleccione un Material", "warn");
       return;
     }
+    if (!personaPantallaSeleccionada?.PersonaId) {
+      showToast("Indique a nombre de quién debe aparecer el Documento en pantalla", "warn");
+      return;
+    }
     if (!observacionTrim) {
       showToast("La Observación es requerida", "warn");
       return;
@@ -953,7 +1107,8 @@ function TabFiscales({ onNavigate }) {
       `Cantidad: ${cantidadNum}   Precio Venta: ${precioVentaNum}   Impuesto: ${impuestoNum}   Total: ${total}\n` +
       `Moneda: ${monedaLabel}\nObservación: ${observacionTrim}\n` +
       `Número de Documento Fiscal: ${numeroDocumentoFiscalTrim}   CAI: ${caiTrim || "—"}\n` +
-      `Fecha Emisión: ${fechaEmision}   Fecha Vencimiento: ${fechaVencimiento}`
+      `Fecha Emisión: ${fechaEmision}   Fecha Vencimiento: ${fechaVencimiento}\n` +
+      `Aparece en pantalla a nombre de: ${personaPantallaSeleccionada.Nombre}`
     )) {
       return;
     }
@@ -978,7 +1133,7 @@ function TabFiscales({ onNavigate }) {
           FechaVencimiento: fechaVencimiento,
           CAI: caiTrim,
           NumeroDocumentoFiscal: numeroDocumentoFiscalTrim,
-          CreatedBy: autorizador
+          CreatedBy: personaPantallaSeleccionada.PersonaId
         })
       });
       const data = await resp.json().catch(() => null);
@@ -987,7 +1142,9 @@ function TabFiscales({ onNavigate }) {
         return;
       }
       showToast(data?.Message || "✓ Documento Fiscal creado con éxito", "ok");
-      setResultado(extraerDocumento(data?.Data));
+      // Ver nota en TabProvisionales: Azure a veces devuelve otra ReferenciaOperativa en el
+      // eco de la respuesta aunque el documento se haya creado bien en la referencia correcta.
+      setResultado({ ...extraerDocumento(data?.Data), ReferenciaOperativa: referenciaTrim });
       setEliminado(false);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
@@ -1347,6 +1504,57 @@ function TabFiscales({ onNavigate }) {
         </div>
       )}
 
+      {clienteInfo && (
+        <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>
+            Indique el nombre de la persona que debe aparecer en pantalla
+          </div>
+          <div style={{ marginBottom: "10px" }}>
+            <input
+              type="text"
+              placeholder="Empiece a escribir el nombre..."
+              value={personaPantallaBusqueda}
+              onChange={(e) => setPersonaPantallaBusqueda(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+            />
+            {buscandoPersonasPantalla && <p style={{ fontSize: "12px", color: "#697386", margin: "6px 0 0" }}>Buscando...</p>}
+          </div>
+
+          {personasPantallaResultados.length > 0 && (
+            <div className="doc-table-wrap" style={{ marginBottom: "10px", maxHeight: "220px" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th>ID Fiscal</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {personasPantallaResultados.map((p) => (
+                    <tr key={p.PersonaId}>
+                      <td>{p.Nombre}</td>
+                      <td>{p.IdFiscal}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="btn soft" type="button" onClick={() => handleSeleccionarPersonaPantalla(p)} style={{ padding: "4px 10px", fontSize: "12px" }}>
+                          Seleccionar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {personaPantallaSeleccionada && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "12px 16px", color: "#166534", fontSize: "13px" }}>
+              ✓ Aparecerá en pantalla a nombre de: <strong>{personaPantallaSeleccionada.Nombre}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
       {proveedorCfoInfo && (
         <button className="btn primary" type="button" onClick={handleCrear} disabled={creando} style={{ marginBottom: "20px" }}>
           {creando ? "Creando..." : "Crear Documento Fiscal"}
@@ -1437,6 +1645,13 @@ function TabInternos({ onNavigate }) {
   const autorizador = autorizadorActual?.id || "";
   const showToast = useToast();
 
+  // A nombre de quién debe aparecer el Documento en pantalla (ver nota en TabProvisionales).
+  const [personaPantallaBusqueda, setPersonaPantallaBusqueda] = useState("");
+  const [buscandoPersonasPantalla, setBuscandoPersonasPantalla] = useState(false);
+  const [personasPantallaResultados, setPersonasPantallaResultados] = useState([]);
+  const [personaPantallaSeleccionada, setPersonaPantallaSeleccionada] = useState(null);
+  const ultimaSeleccionPantallaRef = useRef("");
+
   const resetDesdeReferencia = () => {
     setClienteInfo(null);
     setClienteError(null);
@@ -1453,6 +1668,42 @@ function TabInternos({ onNavigate }) {
     setResultado(null);
     setEliminando(false);
     setEliminado(false);
+    setPersonaPantallaBusqueda("");
+    setPersonasPantallaResultados([]);
+    setPersonaPantallaSeleccionada(null);
+  };
+
+  useEffect(() => {
+    const nombreTrim = personaPantallaBusqueda.trim();
+    if (nombreTrim.length < 2 || nombreTrim === ultimaSeleccionPantallaRef.current) {
+      setPersonasPantallaResultados([]);
+      setBuscandoPersonasPantalla(false);
+      return;
+    }
+    setBuscandoPersonasPantalla(true);
+    const timer = setTimeout(async () => {
+      try {
+        const resp = await apiFetch(`/documentosPostFacturacionBuscarPersonas`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nombre: nombreTrim })
+        });
+        const data = await resp.json().catch(() => null);
+        setPersonasPantallaResultados(resp.ok && Array.isArray(data) ? data : []);
+      } catch (error) {
+        setPersonasPantallaResultados([]);
+      } finally {
+        setBuscandoPersonasPantalla(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [personaPantallaBusqueda]);
+
+  const handleSeleccionarPersonaPantalla = (p) => {
+    setPersonaPantallaSeleccionada(p);
+    setPersonasPantallaResultados([]);
+    ultimaSeleccionPantallaRef.current = p.Nombre;
+    setPersonaPantallaBusqueda(p.Nombre);
   };
 
   const handleBuscarReferencia = async () => {
@@ -1582,6 +1833,10 @@ function TabInternos({ onNavigate }) {
       showToast("Seleccione un Material", "warn");
       return;
     }
+    if (!personaPantallaSeleccionada?.PersonaId) {
+      showToast("Indique a nombre de quién debe aparecer el Documento en pantalla", "warn");
+      return;
+    }
     if (!observacionTrim) {
       showToast("La Observación es requerida", "warn");
       return;
@@ -1610,7 +1865,8 @@ function TabInternos({ onNavigate }) {
       `Referencia: ${referenciaTrim}\nPaís: ${PAISES[paisKey]?.label}\nCliente: ${clienteInfo.ClienteDescripcion}\n` +
       `Proveedor: ${proveedorSeleccionado.Nombre}\nMaterial: ${material?.Descripcion || "—"}\n` +
       `Cantidad: ${cantidadNum}   Precio Venta: ${precioVentaNum}   Impuesto: ${impuestoNum}   Total: ${total}\n` +
-      `Moneda: ${monedaLabel}\nObservación: ${observacionTrim}`
+      `Moneda: ${monedaLabel}\nObservación: ${observacionTrim}\n` +
+      `Aparece en pantalla a nombre de: ${personaPantallaSeleccionada.Nombre}`
     )) {
       return;
     }
@@ -1630,7 +1886,7 @@ function TabInternos({ onNavigate }) {
           Cantidad: cantidadNum,
           PrecioVenta: precioVentaNum,
           Impuesto: impuestoNum,
-          CreatedBy: autorizador
+          CreatedBy: personaPantallaSeleccionada.PersonaId
         })
       });
       const data = await resp.json().catch(() => null);
@@ -1639,7 +1895,9 @@ function TabInternos({ onNavigate }) {
         return;
       }
       showToast(data?.Message || "✓ Documento Interno creado con éxito", "ok");
-      setResultado(extraerDocumento(data?.Data));
+      // Ver nota en TabProvisionales: Azure a veces devuelve otra ReferenciaOperativa en el
+      // eco de la respuesta aunque el documento se haya creado bien en la referencia correcta.
+      setResultado({ ...extraerDocumento(data?.Data), ReferenciaOperativa: referenciaTrim });
       setEliminado(false);
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
@@ -1942,6 +2200,57 @@ function TabInternos({ onNavigate }) {
           <div style={{ padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px", background: "#f1f5f9", color: autorizadorActual ? "#1a1f36" : "#b42318" }}>
             {autorizadorActual?.name || "Tu usuario no está habilitado como autorizador"}
           </div>
+        </div>
+      )}
+
+      {clienteInfo && (
+        <div style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "20px" }}>
+          <div style={{ fontSize: "13px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>
+            Indique el nombre de la persona que debe aparecer en pantalla
+          </div>
+          <div style={{ marginBottom: "10px" }}>
+            <input
+              type="text"
+              placeholder="Empiece a escribir el nombre..."
+              value={personaPantallaBusqueda}
+              onChange={(e) => setPersonaPantallaBusqueda(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "14px" }}
+            />
+            {buscandoPersonasPantalla && <p style={{ fontSize: "12px", color: "#697386", margin: "6px 0 0" }}>Buscando...</p>}
+          </div>
+
+          {personasPantallaResultados.length > 0 && (
+            <div className="doc-table-wrap" style={{ marginBottom: "10px", maxHeight: "220px" }}>
+              <table className="doc-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th>ID Fiscal</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {personasPantallaResultados.map((p) => (
+                    <tr key={p.PersonaId}>
+                      <td>{p.Nombre}</td>
+                      <td>{p.IdFiscal}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="btn soft" type="button" onClick={() => handleSeleccionarPersonaPantalla(p)} style={{ padding: "4px 10px", fontSize: "12px" }}>
+                          Seleccionar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {personaPantallaSeleccionada && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "8px", padding: "12px 16px", color: "#166534", fontSize: "13px" }}>
+              ✓ Aparecerá en pantalla a nombre de: <strong>{personaPantallaSeleccionada.Nombre}</strong>
+            </div>
+          )}
         </div>
       )}
 

@@ -169,6 +169,24 @@ function PermisosChecklist({ selected, onChange, disabled }) {
               );
             })}
           </div>
+          {/* Sub-permisos: capacidades extra DENTRO de un módulo (ej. "poder modificar" vs
+              solo "poder ver"), no son una pantalla aparte así que no viven en area.modules. */}
+          {Object.entries(area.modules)
+            .filter(([, modulo]) => modulo.subPermiso)
+            .map(([moduloKey, modulo]) => {
+              const subKey = permisoKey(areaKey, modulo.subPermiso.key);
+              return (
+                <label key={subKey} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#697386", marginTop: "6px", marginLeft: "16px" }}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(subKey)}
+                    disabled={disabled}
+                    onChange={(e) => onChange(areaKey, modulo.subPermiso.key, e.target.checked)}
+                  />
+                  {modulo.label} — {modulo.subPermiso.label}
+                </label>
+              );
+            })}
         </div>
       ))}
     </div>

@@ -7,6 +7,36 @@ import { requireAuth, requireAdmin } from "../middleware/auth.js";
 const router = Router();
 const JWT_EXPIRES = "12h";
 
+// Resumen legible del User-Agent (ej. "Chrome en Windows") para la Bitácora -- no se usa una
+// librería de parseo completa (innecesaria) porque solo interesa navegador + sistema operativo,
+// no la versión exacta ni el motor de renderizado.
+function describirDispositivo(userAgent) {
+    const ua = userAgent || "";
+    let so = "SO desconocido";
+    if (/windows/i.test(ua)) so = "Windows";
+    else if (/android/i.test(ua)) so = "Android";
+    else if (/iphone|ipad|ipod/i.test(ua)) so = "iOS";
+    else if (/mac os/i.test(ua)) so = "Mac";
+    else if (/linux/i.test(ua)) so = "Linux";
+
+    let navegador = "Navegador desconocido";
+    if (/edg\//i.test(ua)) navegador = "Edge";
+    else if (/chrome\//i.test(ua) && !/edg\//i.test(ua)) navegador = "Chrome";
+    else if (/firefox\//i.test(ua)) navegador = "Firefox";
+    else if (/safari\//i.test(ua) && !/chrome\//i.test(ua)) navegador = "Safari";
+
+    return `${navegador} en ${so}`;
+}
+
+// req.ip respeta X-Forwarded-For solo si Express tiene "trust proxy" configurado; se revisa el
+// header manualmente aparte por si en producción queda detrás de un proxy/balanceador sin esa
+// configuración, para no perder la IP real del usuario.
+function obtenerIp(req) {
+    const forwardedFor = req.headers["x-forwarded-for"];
+    if (forwardedFor) return String(forwardedFor).split(",")[0].trim();
+    return req.ip || req.socket?.remoteAddress || "IP desconocida";
+}
+
 router.post("/login", async (req, res) => {
     try {
         const { nombreUsuario, password } = req.body;
@@ -31,6 +61,18 @@ router.post("/login", async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: JWT_EXPIRES }
         );
+
+        registrarActividad({
+            usuarioId: user.id,
+            usuarioNombre: user.nombre_completo,
+            areaKey: "auth",
+            areaLabel: "Autenticación",
+            moduloKey: "login",
+            moduloLabel: "Inicio de Sesión",
+            accion: "Inició sesión",
+            referencia: obtenerIp(req),
+            motivo: describirDispositivo(req.headers["user-agent"])
+        });
 
         return res.json({
             Token: token,

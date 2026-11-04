@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useToast } from "../../components/Toast.jsx";
 import { apiFetch } from "../../apiClient.js";
 import Aduana, { meta as aduanaMeta } from "./cambioComponente/Aduana.jsx";
@@ -13,7 +13,7 @@ export const meta = {
   kind: "primary",
 };
 
-export default function CambioComponente() {
+export default function CambioComponente({ navParams }) {
   const [referencia, setReferencia] = useState("");
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -97,11 +97,11 @@ export default function CambioComponente() {
     }
   };
 
-  const handleBuscar = async () => {
-    if (!referencia.trim()) {
-      showToast("Ingrese una Referencia Operativa / Hoja de Ruta para buscar", "warn");
-      return;
-    }
+  // Núcleo compartido por la búsqueda manual (botón Buscar) y por la búsqueda automática
+  // cuando se llega desde otro módulo (ej. Habilitar SalesOrder) con una Referencia
+  // Operativa ya conocida. Recibe el valor tal cual (no el estado `referencia`, que
+  // todavía no se actualizó cuando llega por navegación) para no quedar con un texto viejo.
+  const buscarReferencia = async (referenciaValor) => {
     setLoading(true);
     setComponenteExtra("");
     try {
@@ -109,14 +109,14 @@ export default function CambioComponente() {
         apiFetch(`/aduanaPorReferencia`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ referencia: referencia.trim() })
+          body: JSON.stringify({ referencia: referenciaValor })
         }),
         apiFetch(`/hojaRutaPorReferencia`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ referencia: referencia.trim() })
+          body: JSON.stringify({ referencia: referenciaValor })
         }),
-        fetchComponente([referencia.trim()]),
+        fetchComponente([referenciaValor]),
       ]);
 
       const dataCfo = await respCfo.json().catch(() => null);
@@ -140,7 +140,7 @@ export default function CambioComponente() {
             clienteId: ClienteId,
             aduanaId: AduanaId,
             gestionPrefix: (NumeroGestion || "").slice(0, 5),
-            excluirNumeroHojaRuta: referencia.trim()
+            excluirNumeroHojaRuta: referenciaValor
           })
         });
         const dataEjemplo = await respEjemplo.json().catch(() => null);
@@ -157,6 +157,28 @@ export default function CambioComponente() {
       setLoading(false);
     }
   };
+
+  const handleBuscar = async () => {
+    if (!referencia.trim()) {
+      showToast("Ingrese una Referencia Operativa / Hoja de Ruta para buscar", "warn");
+      return;
+    }
+    await buscarReferencia(referencia.trim());
+  };
+
+  // Llegada automática desde otro módulo (ej. Habilitar SalesOrder) con una Referencia
+  // Operativa ya conocida -- se busca sola, sin tener que copiarla y pegarla a mano. El
+  // "token" distingue cada navegación para no repetir la búsqueda si el componente ya
+  // estaba montado y solo cambian otras props.
+  const ultimoTokenNav = useRef(null);
+  useEffect(() => {
+    if (navParams?.referencia && navParams.token !== ultimoTokenNav.current) {
+      ultimoTokenNav.current = navParams.token;
+      setReferencia(navParams.referencia);
+      buscarReferencia(navParams.referencia.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navParams]);
 
   const handleClear = () => {
     setReferencia("");

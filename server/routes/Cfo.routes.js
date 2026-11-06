@@ -1195,6 +1195,80 @@ app.post('/componentePorReferencias', requirePermission('cfo', 'cambio'), async 
     }
 });
 
+// Componentes "genéricos" fijos (uno por Aduana/Régimen, no ligados a ninguna Referencia
+// Operativa en particular) que sirven de respaldo para Cambio de Componente cuando una
+// Referencia no tiene ninguna otra Referencia de Ejemplo disponible (mismo Cliente + Aduana +
+// prefijo de Gestión) de la cual tomar un Componente de comparación. Lista fija entregada por
+// el negocio -- mismo criterio que ADUANAS_CUADRILLA (ver más abajo).
+const COMPONENTES_EXTERNOS_ADUANA = {
+    puertoCortes: { label: "DUCA D/IMPORT/PUERTO CORTES", componenteId: "CF527210-A6CE-4D95-82D4-1CA0D3D5FFA5" },
+    corinto: { label: "DUCA D/IMPORT/CORINTO", componenteId: "DBF9D0FE-3FDF-4808-B23B-1CDD78F07D46" },
+    guasaule: { label: "DUCA D/IMPORT/GUASAULE", componenteId: "2CBA24FC-D3F9-4668-846C-1C0216FEEDB3" },
+    elFlorido: { label: "DUCA D/IMPORT/EL FLORIDO", componenteId: "7DD8FA7B-A084-4D3A-B642-1CDD7905071B" },
+    amatillo: { label: "DUCA D/IMPORT/AMATILLO", componenteId: "2F5F18AE-4406-4939-8314-1C6BB4051CB3" },
+    aguaCaliente: { label: "DUCA D/IMPORT/AGUA CALIENTE", componenteId: "D51CC03D-2D31-48A8-B933-1CDD78D41F08" },
+    elPoy: { label: "DUCA D/IMPORT/EL POY", componenteId: "FDC48794-6B2E-41AB-A8EE-1C63AA8318FE" },
+    lasManos: { label: "DUCA D/IMPORT/LAS MANOS", componenteId: "8AB14DA8-8F61-4811-9AFC-1CDD7921619F" },
+    laMesa: { label: "DUCA D/IMPORT/LA MESA", componenteId: "83B2B77D-1F38-4A9D-8FB9-2317FF15FDD6" },
+    puertoCastilla: { label: "DUCA D/IMPORT/PUERTO CASTILLA", componenteId: "466DB6C5-C73F-4D77-8AEE-2317FF61CE5A" },
+    toncontin: { label: "DUCA D/IMPORT/TONCONTIN", componenteId: "EC836B9F-1870-4D50-A71B-2379B7C2181D" },
+};
+
+app.get('/componentesExternosAduana', requirePermission('cfo', 'cambio'), (req, res) => {
+    res.json(Object.entries(COMPONENTES_EXTERNOS_ADUANA).map(([key, a]) => ({ key, label: a.label })));
+});
+
+// Resuelve, para un Componente externo fijo, la Oficina de Venta / Centro Suministrador reales
+// con los que debe quedar la Referencia -- se toman "prestados" de cualquier Referencia
+// Operativa (activa de preferencia) que ya use ese mismo Componente, ya que esos dos campos
+// viven en SalesOrder, no en Componente.
+app.post('/componenteExternoPorAduana', requirePermission('cfo', 'cambio'), async (req, res) => {
+    try {
+        const { key } = req.body;
+        const aduana = COMPONENTES_EXTERNOS_ADUANA[key];
+        if (!aduana) {
+            return res.status(400).json({ Message: "Debe seleccionar un Componente externo válido." });
+        }
+
+        const pool = await conexion(BasesDeDatos.CfoNetCore);
+        const resultado = await pool.request()
+            .input('id', sql.UniqueIdentifier, aduana.componenteId)
+            .query(`
+                SELECT TOP 1
+                    C.ID AS Componente_ID,
+                    C.Descripcion,
+                    SO.CentroSuministrador,
+                    SO.OficinaVenta
+                FROM [dbo].[Componente] C
+                LEFT JOIN [dbo].[SalesOrderDetalle] SD ON SD.ComponenteID = C.ID
+                LEFT JOIN [dbo].[SalesOrder] SO ON SO.id = SD.salesOrderId
+                WHERE C.ID = @id
+                ORDER BY CASE WHEN SO.IsSoftDeleted = 0 THEN 0 ELSE 1 END
+            `);
+        const fila = resultado.recordset[0];
+        if (!fila || !fila.Componente_ID) {
+            return res.status(404).json({ Message: "No se encontró ese Componente externo en la base de datos." });
+        }
+        if (!fila.OficinaVenta || !fila.CentroSuministrador) {
+            return res.status(404).json({ Message: "Ese Componente externo no tiene ninguna Referencia Operativa de la cual tomar Oficina de Venta / Centro Suministrador." });
+        }
+
+        return res.json({
+            ReferenciaOperativa: `Externo: ${aduana.label}`,
+            SalesOrderDetalleId: null,
+            Componente_ID: fila.Componente_ID,
+            Descripcion: fila.Descripcion,
+            CentroSuministrador: fila.CentroSuministrador,
+            OficinaVenta: fila.OficinaVenta,
+            IsSoftDeleted: false,
+            ObservacionLongitud: 0,
+        });
+    } catch (error) {
+        console.error("Error en componenteExternoPorAduana:", error);
+        return res.status(500).json({ Message: "Error al buscar el Componente externo", Error: error.message });
+    }
+});
+
 app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req, res) => {
     try {
         const { SalesOrderDetalleId, ComponenteId, OficinaVenta, CentroSuministrador, ModifiedBy, Observacion } = req.body;
@@ -1404,11 +1478,6 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
         ])];
 
         const request = pool.request();
-        const parametrosSinGuion = listaReferencias.map((valor, i) => {
-            const nombre = `refS${i}`;
-            request.input(nombre, sql.VarChar, valor.replace(/-/g, ''));
-            return `@${nombre}`;
-        });
         const parametrosResueltos = referenciasResueltas.map((valor, i) => {
             const nombre = `refR${i}`;
             request.input(nombre, sql.VarChar, valor);
@@ -1430,10 +1499,15 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
         });
 
         const resultado = await request.query(`
+            -- Usa la forma exacta ya resuelta arriba (parametrosResueltos) para comparar
+            -- ReferenciaOperativa directo (sargable, usa índice) en vez de volver a envolverla
+            -- en REPLACE() aquí: hacerlo de nuevo sería repetir el mismo escaneo completo de
+            -- SalesOrder (medido: ~3.3s contra sus 500 mil+ filas) sin necesidad, ya que el
+            -- REPLACE solo hacía falta UNA vez, para resolver la forma exacta.
             SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.SalesOrder SO
             LEFT JOIN dbo.RegistroContable RC ON RC.Id = SO.RegistroContableId
-            WHERE REPLACE(SO.ReferenciaOperativa, '-', '') IN (${parametrosSinGuion.join(", ")})
+            WHERE SO.ReferenciaOperativa IN (${parametrosResueltos.join(", ")})
               AND SO.Status_Value = 3
 
             SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
@@ -1450,7 +1524,7 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             SELECT 'Fiscal' AS Tipo, SO.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
             FROM dbo.SalesOrder SO
             INNER JOIN dbo.RegistroContable RC ON RC.Id = SO.RegistroContableId
-            WHERE REPLACE(SO.ReferenciaOperativa, '-', '') IN (${parametrosSinGuion.join(", ")})
+            WHERE SO.ReferenciaOperativa IN (${parametrosResueltos.join(", ")})
               AND RC.IsSoftDeleted = 1
 
             SELECT 'Nota de Reembolso' AS Tipo, D.ReferenciaOperativa, RC.NumeroFacturaSap, RC.IsSoftDeleted, RC.ModifiedBy, RC.ModifiedDate
@@ -2028,16 +2102,28 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
         });
 
         if (!resp.ok) {
-            const errData = await resp.text();
-            console.error(`SalesOrder/AddLineaMaterialNewApp → HTTP ${resp.status} para ${ReferenciaOperativa}:`, errData);
-            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
+            // Este endpoint de Azure (a diferencia de casi todos los demás) a veces responde con
+            // HTTP 400 -- en vez de 200 -- para un rechazo por regla de negocio (ej. "SalesOrder
+            // ya esta facturada"). Antes se mostraba siempre como "Error al comunicarse con el
+            // servicio externo", ocultando el motivo real. Si el cuerpo trae la forma esperada de
+            // Azure (IsValid:false + Exception.Message), se muestra ese mensaje igual que cuando
+            // Azure responde 200 con IsValid:false más abajo.
+            const errText = await resp.text();
+            let errData = null;
+            try { errData = JSON.parse(errText); } catch { /* no era JSON */ }
+            if (errData && errData.IsValid === false) {
+                console.warn(`SalesOrder/AddLineaMaterialNewApp → HTTP ${resp.status} (regla de negocio) para ${ReferenciaOperativa}:`, errText);
+                return res.status(400).json({ Message: errData.Exception?.Message || mensajeDeAzure(errData) || "Azure rechazó la solicitud." });
+            }
+            console.error(`SalesOrder/AddLineaMaterialNewApp → HTTP ${resp.status} para ${ReferenciaOperativa}:`, errText);
+            return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errText });
         }
 
         const data = await resp.json().catch(() => null);
         console.log(`SalesOrder/AddLineaMaterialNewApp → ${ReferenciaOperativa}:`, JSON.stringify(data));
 
         if (data?.IsValid === false) {
-            return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
+            return res.status(400).json({ Message: data.Exception?.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
         registrarActividad({
@@ -5694,10 +5780,11 @@ app.post('/crearEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), 
     }
 });
 
-// Valores de SolicitudEspecieFiscal.Status_Value confirmados hasta ahora (el de "Creado" viene
-// de la respuesta real de SolicitudEspecieFiscal/Create); si aparece un valor no listado aquí,
-// se muestra el número tal cual en vez de adivinar una etiqueta.
-const ESTADOS_ESPECIE_FISCAL = { 1: "Creado" };
+// Valores de SolicitudEspecieFiscal.Status_Value, confirmados contra el catálogo real de Azure
+// (GET /api/Enum/GetSolicitudEspecieFiscalStatus). Si aparece un valor no listado aquí (ej. si
+// Azure agrega uno nuevo más adelante), se muestra el número tal cual en vez de adivinar una
+// etiqueta.
+const ESTADOS_ESPECIE_FISCAL = { 1: "Creado", 2: "Aprobado", 3: "Denegado", 4: "Cargado" };
 
 app.post('/especiesFiscalesPorReferencia', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
     try {

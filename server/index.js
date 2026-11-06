@@ -3,6 +3,23 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
+import { Agent, setGlobalDispatcher, fetch as undiciFetch } from 'undici'
+
+// El fetch() global NATIVO de Node (el que usan todas las rutas sin importar nada especial)
+// no comparte dispatcher con el paquete "undici" instalado aparte -- setGlobalDispatcher()
+// por sí solo NO le afecta (confirmado probándolo). Por eso se reemplaza fetch global
+// completo por el de "undici", que sí respeta esta configuración.
+//
+// El motivo del cambio: undici usa por defecto un timeout de conexión de solo 10s
+// (connectTimeout). Las llamadas a cfows.azurewebsites.net a veces tardan más que eso en
+// responder la primera vez (el App Service "duerme" tras un rato sin tráfico y debe
+// "despertar"), lo que antes se veía como un "Error interno del servidor" (TypeError: fetch
+// failed / ConnectTimeoutError) sin que hubiera ningún bug real en el código. Se sube a 30s
+// para casi siempre esperar lo suficiente, pero sigue acotado para no dejar una petición
+// colgada para siempre si Azure de verdad está caído.
+setGlobalDispatcher(new Agent({ connectTimeout: 30000 }));
+globalThis.fetch = undiciFetch;
+
 const app = express()
 import cfoRoutes from './routes/Cfo.routes.js'
 import hrRoutes from './routes/Hr.routes.js'
@@ -12,6 +29,7 @@ import authRoutes from './routes/Auth.routes.js'
 import actividadRoutes from './routes/Actividad.routes.js'
 import personasRoutes from './routes/Personas.routes.js'
 import cajaChicaRoutes from './routes/CajaChica.routes.js'
+import negociacionMaterialesRoutes from './routes/NegociacionMateriales.routes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const clienteDist = path.join(__dirname, '../client/dist')
@@ -61,6 +79,7 @@ app.use('/api', corsOptions, analisisRoutes);
 app.use('/api', corsOptions, seguimientoRoutes);
 app.use('/api', corsOptions, actividadRoutes);
 app.use('/api', corsOptions, cajaChicaRoutes);
+app.use('/api', corsOptions, negociacionMaterialesRoutes);
 
 // En producción, el mismo servidor sirve el build del cliente (client/dist), evitando
 // tener que desplegar y configurar dos servicios/dominios separados.

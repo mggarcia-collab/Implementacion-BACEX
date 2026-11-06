@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useToast } from "../../components/Toast.jsx";
 import { apiFetch } from "../../apiClient.js";
 import Aduana, { meta as aduanaMeta } from "./cambioComponente/Aduana.jsx";
@@ -22,8 +22,24 @@ export default function CambioComponente() {
   const [hrEjemplo, setHrEjemplo] = useState([]);
   const [componenteData, setComponenteData] = useState([]);
   const [componenteExtra, setComponenteExtra] = useState("");
+  const [opcionesExternas, setOpcionesExternas] = useState([]);
+  const [componenteExterno, setComponenteExterno] = useState(null);
   const [actualizandoComponente, setActualizandoComponente] = useState(false);
   const showToast = useToast();
+
+  // Lista fija de Componentes "genéricos" por Aduana -- se carga una sola vez, es independiente
+  // de cualquier búsqueda de Referencia Operativa.
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await apiFetch(`/componentesExternosAduana`);
+        const data = await resp.json().catch(() => null);
+        if (resp.ok) setOpcionesExternas(Array.isArray(data) ? data : []);
+      } catch {
+        // Si falla, el selector de Componente externo queda vacío.
+      }
+    })();
+  }, []);
 
   const fetchComponente = async (referencias) => {
     try {
@@ -55,6 +71,32 @@ export default function CambioComponente() {
     fetchComponente([referencia.trim()]);
   };
 
+  // Cuando no hay ninguna Referencia de Ejemplo disponible para comparar, se puede tomar en su
+  // lugar un Componente "genérico" fijo por Aduana (ver COMPONENTES_EXTERNOS_ADUANA en el
+  // backend) -- se guarda aparte de componenteData porque no viene de ninguna búsqueda por
+  // Referencia Operativa.
+  const handleAgregarComponenteExterno = async (key) => {
+    try {
+      const resp = await apiFetch(`/componenteExternoPorAduana`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        showToast(data?.Message || "Error al buscar el Componente externo", "warn");
+        return;
+      }
+      setComponenteExterno(data);
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    }
+  };
+
+  const handleQuitarComponenteExterno = () => {
+    setComponenteExterno(null);
+  };
+
   const handleActualizarComponente = async ({ componenteId, autorizador, motivo }) => {
     const filaActual = componenteData.find((r) => r.ReferenciaOperativa === referencia.trim());
     if (!filaActual) {
@@ -62,8 +104,10 @@ export default function CambioComponente() {
       return;
     }
     // El Centro Suministrador y la Oficina de Venta deben quedar como los del componente
-    // nuevo (tomado de la referencia de comparación), no los de la referencia original.
-    const filaComponenteNuevo = componenteData.find((r) => r.Componente_ID === componenteId);
+    // nuevo (tomado de la referencia de comparación, o del Componente externo elegido), no
+    // los de la referencia original.
+    const filaComponenteNuevo = componenteData.find((r) => r.Componente_ID === componenteId)
+      || (componenteExterno?.Componente_ID === componenteId ? componenteExterno : null);
     if (!filaComponenteNuevo) {
       showToast("No se encontró el detalle del componente nuevo seleccionado", "warn");
       return;
@@ -104,6 +148,7 @@ export default function CambioComponente() {
     }
     setLoading(true);
     setComponenteExtra("");
+    setComponenteExterno(null);
     try {
       const [respCfo, respHr] = await Promise.all([
         apiFetch(`/aduanaPorReferencia`, {
@@ -165,6 +210,7 @@ export default function CambioComponente() {
     setHrEjemplo([]);
     setComponenteData([]);
     setComponenteExtra("");
+    setComponenteExterno(null);
     setSearched(false);
   };
 
@@ -215,13 +261,17 @@ export default function CambioComponente() {
           key: "componente",
           ...componenteMeta,
           Component: Componente,
-          resultados: componenteData,
+          resultados: componenteExterno ? [...componenteData, componenteExterno] : componenteData,
           full: true,
           extraProps: {
             opciones: hrEjemplo.map((r) => r.NumeroHojaRuta).filter((ref) => ref !== componenteExtra),
             extra: componenteExtra,
             onAgregarExtra: handleAgregarComponenteExtra,
             onQuitarExtra: handleQuitarComponenteExtra,
+            opcionesExternas,
+            externo: componenteExterno,
+            onAgregarExterno: handleAgregarComponenteExterno,
+            onQuitarExterno: handleQuitarComponenteExterno,
           },
         })}
         {renderCuadro({
@@ -231,9 +281,12 @@ export default function CambioComponente() {
           full: true,
           extraProps: {
             filaActual: componenteData.find((r) => r.ReferenciaOperativa === referencia.trim()) || null,
-            opciones: componenteData
-              .filter((r) => r.ReferenciaOperativa !== referencia.trim())
-              .map((r) => ({ value: r.Componente_ID, label: `${r.Descripcion} — ${r.ReferenciaOperativa}` })),
+            opciones: [
+              ...componenteData
+                .filter((r) => r.ReferenciaOperativa !== referencia.trim())
+                .map((r) => ({ value: r.Componente_ID, label: `${r.Descripcion} — ${r.ReferenciaOperativa}` })),
+              ...(componenteExterno ? [{ value: componenteExterno.Componente_ID, label: `${componenteExterno.Descripcion} — ${componenteExterno.ReferenciaOperativa}` }] : []),
+            ],
             onActualizar: handleActualizarComponente,
             actualizando: actualizandoComponente,
           },

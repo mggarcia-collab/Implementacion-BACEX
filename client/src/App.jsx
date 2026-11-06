@@ -154,10 +154,9 @@ function AppShell() {
   return (
     <div className="app">
       <header className="topbar" style={{ display: "grid", gridTemplateColumns: "260px 1fr 260px", alignItems: "center", height: "70px" }}>
-        <div className="topbar-left" style={{ display: "flex", alignItems: "center", gap: "12px", paddingLeft: "20px" }}>
-          <button className="topbar-hamburger" onClick={() => setSidebarOpen((prev) => !prev)} title={sidebarOpen ? "Ocultar módulos" : "Mostrar módulos"}>☰</button>
-          <img src="/vesta-logo.png" alt="" style={{ width: "26px", height: "26px", borderRadius: "50%", objectFit: "cover" }} />
-          <span className="brand">Bac<span>-Ex</span></span>
+        <div className="topbar-left" style={{ position: "relative", display: "flex", alignItems: "center", height: "100%", paddingLeft: "20px" }}>
+          <button className="topbar-hamburger" style={{ position: "relative", zIndex: 1 }} onClick={() => setSidebarOpen((prev) => !prev)} title={sidebarOpen ? "Ocultar módulos" : "Mostrar módulos"}>☰</button>
+          <span className="brand" style={{ position: "absolute", left: 0, right: 0, textAlign: "center", pointerEvents: "none" }}>SIS<span>TEC</span></span>
         </div>
         <div className="topbar-center" style={{ justifySelf: "center" }}>
           <button className="topbar-home" onClick={handleExitModule} title="Ir al inicio">

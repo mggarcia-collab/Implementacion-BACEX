@@ -183,7 +183,13 @@ export default function SalesOrder({ onNavigate }) {
         <button
           type="button"
           className="btn danger"
-          onClick={() => onNavigate?.("cfo", "cambio")}
+          onClick={() => {
+            const primeraReferencia = (formValues["so_num"] || "")
+              .split(/[\n,]/)
+              .map((item) => item.replace(/['"]/g, "").trim())
+              .find((item) => item.length > 0);
+            onNavigate?.("cfo", "cambio", primeraReferencia ? { referencia: primeraReferencia, token: Date.now() } : null);
+          }}
           style={{ padding: "6px 14px", fontSize: "12px", whiteSpace: "nowrap" }}
         >
           Ir a Cambio de Componente

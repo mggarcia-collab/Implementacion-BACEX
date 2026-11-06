@@ -6,7 +6,7 @@ import { useAutorizadorActual } from "../../cfo/useAutorizadorActual.js";
 export const meta = {
   label: "Evaluar Matriz",
   icon: "🔁",
-  desc: "Reiniciar (marcar Vigente/No vigente) y volver a evaluar la solicitud seleccionada en Json Solicitud",
+  desc: "Actualizar el estado Vigente/No vigente y volver a evaluar la solicitud seleccionada en Json Solicitud",
 };
 
 export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEvaluado }) {
@@ -14,7 +14,13 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
   const autorizadorActual = useAutorizadorActual();
   const autorizador = autorizadorActual?.id || "";
   const [resultado, setResultado] = useState(null);
-  const [procesando, setProcesando] = useState(false);
+  // Cada botón tiene su propio estado de "procesando" (en vez de uno solo compartido)
+  // para que al evaluar no parezca que "Actualizar" también está trabajando, y viceversa.
+  // Mientras cualquiera de los dos corre, ambos quedan deshabilitados para no disparar
+  // dos acciones a la vez sobre la misma solicitud.
+  const [procesandoActualizar, setProcesandoActualizar] = useState(false);
+  const [procesandoEvaluar, setProcesandoEvaluar] = useState(false);
+  const procesando = procesandoActualizar || procesandoEvaluar;
   const showToast = useToast();
 
   const solicitud = solicitudes.find((s) => s.TipoSolicitudId === tipoSolicitudId) || null;
@@ -24,17 +30,16 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
     return <p style={{ color: "#697386", fontSize: "14px" }}>Seleccione un Tipo de Solicitud en "Json Solicitud" para poder reiniciarla.</p>;
   }
 
-  const handleEjecutar = async () => {
+  const handleActualizar = async () => {
     if (!autorizador) {
       showToast("Seleccione quién autoriza antes de continuar", "warn");
       return;
     }
-    if (!window.confirm(`¿Confirma marcar este análisis como Vigente = ${vigente === "true" ? "Sí" : "No"} y reevaluarlo?`)) {
+    if (!window.confirm(`¿Confirma marcar este análisis como Vigente = ${vigente === "true" ? "Sí" : "No"}?`)) {
       return;
     }
 
-    setProcesando(true);
-    setResultado(null);
+    setProcesandoActualizar(true);
     try {
       const respActualizar = await apiFetch(`/actualizarAnalisisVigente`, {
         method: "POST",
@@ -42,7 +47,11 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
         body: JSON.stringify({
           analisisId: solicitud.AnalisisId,
           usuarioId: autorizador,
-          vigente: vigente === "true"
+          // El campo Vigente usa la convención invertida de este dominio (igual que en
+          // Solicitudes Asociadas): 0/false = SI, 1/true = NO. El selector de abajo
+          // muestra "Sí"/"No" en el sentido normal, así que aquí se invierte antes de
+          // mandarlo al servicio externo.
+          vigente: vigente === "false"
         })
       });
       const dataActualizar = await respActualizar.json().catch(() => null);
@@ -51,7 +60,22 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
         return;
       }
       showToast(dataActualizar?.Message || "✓ Análisis actualizado", "ok");
+      await onEvaluado?.();
+    } catch (error) {
+      showToast("⚠️ Error de conexión con el servidor", "warn");
+    } finally {
+      setProcesandoActualizar(false);
+    }
+  };
 
+  const handleEvaluar = async () => {
+    if (!window.confirm("¿Confirma volver a evaluar esta solicitud?")) {
+      return;
+    }
+
+    setProcesandoEvaluar(true);
+    setResultado(null);
+    try {
       const respEvaluar = await apiFetch(`/evaluarAnalisis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -63,12 +87,12 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
         return;
       }
       setResultado(dataEvaluar?.Data ?? dataEvaluar);
-      showToast("✓ Análisis reevaluado con éxito", "ok");
+      showToast("✓ Análisis evaluado con éxito", "ok");
       await onEvaluado?.();
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
-      setProcesando(false);
+      setProcesandoEvaluar(false);
     }
   };
 
@@ -104,8 +128,12 @@ export default function EvaluarMatriz({ solicitudes = [], tipoSolicitudId, onEva
           </div>
         </div>
 
-        <button className="btn soft" onClick={handleEjecutar} disabled={procesando} style={{ padding: "9px 18px", fontSize: "13px" }}>
-          {procesando ? "Procesando..." : "Actualizar y Evaluar"}
+        <button className="btn soft" onClick={handleActualizar} disabled={procesando} style={{ padding: "9px 18px", fontSize: "13px" }}>
+          {procesandoActualizar ? "Procesando..." : "Actualizar"}
+        </button>
+
+        <button className="btn primary" onClick={handleEvaluar} disabled={procesando} style={{ padding: "9px 18px", fontSize: "13px" }}>
+          {procesandoEvaluar ? "Procesando..." : "Evaluar"}
         </button>
       </div>
 

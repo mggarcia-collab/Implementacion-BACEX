@@ -170,7 +170,9 @@ app.post('/evaluarAnalisis', requirePermission('red', 'matriz'), async (req, res
             return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
         }
 
-        const data = await resp.json().catch(() => null);
+        const rawText = await resp.text();
+        console.log(`AnalisisCriterioTestApi/EvaluarAnalisisByGestionAndTipoSolicitud → HTTP ${resp.status} para GestionId=${gestionId} TipoSolicitudId=${tipoSolicitudId}:`, rawText);
+        const data = rawText ? JSON.parse(rawText) : null;
         return res.status(200).json({ Data: data });
 
     } catch (error) {

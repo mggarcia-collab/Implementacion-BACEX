@@ -14,14 +14,29 @@ export default function Componente({
   extra = "",
   onAgregarExtra,
   onQuitarExtra,
+  opcionesExternas = [],
+  externo = null,
+  onAgregarExterno,
+  onQuitarExterno,
 }) {
   const [seleccion, setSeleccion] = useState("");
+  const [preguntarExterno, setPreguntarExterno] = useState(false);
+  const [seleccionExterna, setSeleccionExterna] = useState("");
 
   const handleAgregar = () => {
     if (!seleccion) return;
     onAgregarExtra?.(seleccion);
     setSeleccion("");
   };
+
+  const handleUsarExterno = () => {
+    if (!seleccionExterna) return;
+    onAgregarExterno?.(seleccionExterna);
+    setPreguntarExterno(false);
+    setSeleccionExterna("");
+  };
+
+  const sinReferenciasDeEjemplo = opciones.length === 0 && !extra;
 
   return (
     <div>
@@ -48,6 +63,57 @@ export default function Componente({
           </button>
         )}
       </div>
+
+      {sinReferenciasDeEjemplo && !externo && (
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "10px 14px", marginBottom: "14px" }}>
+          {!preguntarExterno ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <span style={{ fontSize: "13px", fontWeight: "600", color: "#92400e" }}>
+                No hay Referencias Operativas de Ejemplo disponibles.
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "13px", color: "#92400e" }}>
+                  ¿Desea utilizar un Componente externo?
+                </span>
+                <button className="btn ghost" onClick={() => setPreguntarExterno(true)} disabled={loading} style={{ padding: "6px 14px", fontSize: "12px" }}>
+                  Sí, elegir uno
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <select
+                value={seleccionExterna}
+                onChange={(e) => setSeleccionExterna(e.target.value)}
+                disabled={loading}
+                style={{ padding: "8px 10px", border: "1px solid #dcdfe6", borderRadius: "6px", fontSize: "13px", background: "#fff", minWidth: "260px" }}
+              >
+                <option value="">Seleccione un Componente externo...</option>
+                {opcionesExternas.map((o) => (
+                  <option key={o.key} value={o.key}>{o.label}</option>
+                ))}
+              </select>
+              <button className="btn primary" onClick={handleUsarExterno} disabled={!seleccionExterna || loading} style={{ padding: "6px 16px", fontSize: "13px" }}>
+                Usar este Componente
+              </button>
+              <button className="btn ghost" onClick={() => setPreguntarExterno(false)} disabled={loading} style={{ padding: "6px 14px", fontSize: "12px" }}>
+                Cancelar
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {externo && (
+        <div style={{ background: "#eff6ff", border: "1px solid #93c5fd", borderRadius: "8px", padding: "10px 14px", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+          <span style={{ fontSize: "13px", color: "#1e3a8a" }}>
+            Usando Componente externo: <strong>{externo.Descripcion}</strong>
+          </span>
+          <button className="btn ghost" onClick={onQuitarExterno} disabled={loading} style={{ padding: "6px 14px", fontSize: "12px" }}>
+            Quitar ✕
+          </button>
+        </div>
+      )}
 
       {searched && !loading && resultados.length === 0 && (
         <p style={{ color: "#697386", fontSize: "14px" }}>No se encontraron componentes para esa referencia.</p>

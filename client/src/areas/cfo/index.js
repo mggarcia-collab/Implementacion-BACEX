@@ -14,6 +14,7 @@ import CrearDocumentosPostFacturacion, { meta as crearDocumentosPostFacturacionM
 import CrearEspecieFiscal, { meta as crearEspecieFiscalMeta } from "./CrearEspecieFiscal.jsx";
 import CajaChica, { meta as cajaChicaMeta } from "./CajaChica.jsx";
 import IndicadorImpuestoSalesOrder, { meta as indicadorImpuestoMeta } from "./IndicadorImpuestoSalesOrder.jsx";
+import MaterialesNegociacion, { meta as materialesNegociacionMeta } from "./MaterialesNegociacion.jsx";
 
 export const label = "CFO / Finanzas";
 export const icon = "📊";
@@ -35,6 +36,7 @@ export const modules = {
   crearEspecieFiscal: { ...crearEspecieFiscalMeta, Component: CrearEspecieFiscal },
   cajaChica: { ...cajaChicaMeta, Component: CajaChica },
   indicadorImpuesto: { ...indicadorImpuestoMeta, Component: IndicadorImpuestoSalesOrder },
+  materialesNegociacion: { ...materialesNegociacionMeta, Component: MaterialesNegociacion },
 };
 
 // Agrupa los módulos de CFO en el sidebar para que no se vean como una lista plana larga.
@@ -46,5 +48,5 @@ export const groups = [
   { label: "Modificar Documentos", modules: ["habDoc", "redondeo", "eliminarModificarLineaMaterial", "indicadorImpuesto"] },
   { label: "Eliminación / Anulación", modules: ["contrarecibo", "elimDoc", "anulacionFacturas"] },
   { label: "Catálogos", modules: ["crearProveedorCliente"] },
-  { label: "Administración", modules: ["cajaChica"] },
+  { label: "Administración", modules: ["cajaChica", "materialesNegociacion"] },
 ];

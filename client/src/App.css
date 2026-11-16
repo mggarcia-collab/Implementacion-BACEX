@@ -226,9 +226,26 @@ body {
   min-height: 0;
   background: #ffffff;
   border-right: 1px solid var(--border);
-  padding: 20px 0;
   flex-shrink: 0;
-  overflow-y: auto; /* fijo respecto al topbar/contenido; si la lista de módulos es más alta que la pantalla, hace scroll ella sola */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Lista normal de Áreas (CFO, Red, Errores, Administración): es la que hace scroll si no cabe
+   todo, sin arrastrar consigo el pie fijo de Soporte. */
+.sidebar-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 0;
+}
+
+/* Soporte vive aparte del resto de Áreas de negocio: una franja fija al fondo del sidebar
+   (separada con una línea), para que no se confunda con el resto de la lista. */
+.sidebar-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
 }
 
 .sidebar-label {
@@ -256,15 +273,32 @@ body {
 
 .sidebar-collapsed-rail {
   width: 52px;
+  height: 100%;
   background: #ffffff;
   border-right: 1px solid var(--border);
-  padding: 16px 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+}
+
+.sidebar-collapsed-rail-main {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0;
+}
+
+/* Mismo criterio que .sidebar-footer: el ícono de Soporte queda pegado abajo, separado del
+   resto con una línea, también cuando el sidebar está colapsado a solo íconos. */
+.sidebar-collapsed-rail-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
 }
 
 
@@ -317,6 +351,11 @@ body {
 
 .mod-icon.amber {
   background: linear-gradient(135deg, #94a3b8 0%, #cbd5e1 100%);
+  color: white;
+}
+
+.mod-icon.purple {
+  background: linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%);
   color: white;
 }
 

@@ -30,6 +30,7 @@ import actividadRoutes from './routes/Actividad.routes.js'
 import personasRoutes from './routes/Personas.routes.js'
 import cajaChicaRoutes from './routes/CajaChica.routes.js'
 import negociacionMaterialesRoutes from './routes/NegociacionMateriales.routes.js'
+import webhooksRoutes from './routes/Webhooks.routes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const clienteDist = path.join(__dirname, '../client/dist')
@@ -73,6 +74,13 @@ const corsOptions = cors({
 
 app.use('/api/auth', corsOptions, authRoutes);
 app.use('/api/auth', corsOptions, personasRoutes);
+// Va primero en la cadena de '/api': todos los demás routers de abajo hacen
+// app.use(requireAuth) SIN restringir ruta, así que si webhooksRoutes se montara
+// después, cualquiera de ellos interceptaría la petición del webhook (sin sesión)
+// con un 401 antes de que llegara a su propia ruta. No pasa por requireAuth porque
+// lo llama un flujo externo (Power Automate), no un usuario logueado en BAC-EX;
+// se protege con su propio secreto dentro de la ruta (ver Webhooks.routes.js).
+app.use('/api', corsOptions, webhooksRoutes);
 app.use('/api', corsOptions, cfoRoutes);
 app.use('/api', corsOptions, hrRoutes);
 app.use('/api', corsOptions, analisisRoutes);

@@ -1,5 +1,5 @@
 import jwt from "jsonwebtoken";
-import { authDb, getPermisosDeUsuario } from "../database/authDb.js";
+import { authDb, getPermisosDeUsuario, obtenerOficinasPermitidas } from "../database/authDb.js";
 
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization;
@@ -25,7 +25,11 @@ export function requireAuth(req, res, next) {
       nombreUsuario: user.nombre_usuario,
       nombreCompleto: user.nombre_completo,
       isAdmin: !!user.is_admin,
-      permisos: getPermisosDeUsuario(user.id)
+      permisos: getPermisosDeUsuario(user.id),
+      // null = sin restricción (ve todas las Aduanas/Oficinas); array = restringido a esas
+      // Oficinas de Venta. Se asigna al crear el usuario (o después, en Administración →
+      // Usuarios). Un admin nunca queda restringido aunque tenga filas.
+      oficinasPermitidas: obtenerOficinasPermitidas(user.id)
     };
     next();
   } catch (error) {

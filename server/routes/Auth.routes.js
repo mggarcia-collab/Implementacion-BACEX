@@ -1,8 +1,9 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { authDb, getPermisosDeUsuario, registrarActividad } from "../database/authDb.js";
+import { authDb, getPermisosDeUsuario, obtenerOficinasPermitidas, asignarOficinas, registrarActividad } from "../database/authDb.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { ADUANAS_CANONICAS } from "../aduanas.js";
 
 const router = Router();
 const JWT_EXPIRES = "12h";
@@ -116,13 +117,46 @@ router.get("/usuarios", requireAuth, requireAdmin, (req, res) => {
         personaId: u.persona_id,
         isAdmin: !!u.is_admin,
         activo: !!u.activo,
-        permisos: getPermisosDeUsuario(u.id)
+        permisos: getPermisosDeUsuario(u.id),
+        oficinasPermitidas: obtenerOficinasPermitidas(u.id)
     })));
+});
+
+// Catálogo de Aduanas para el selector de "Aduanas permitidas" de un usuario -- lista fija
+// (ver server/aduanas.js), construida y verificada contra los valores reales de
+// HojaDeRuta.dbo.HojaRuta.AduanaDescripcion, que es la fuente real de la Aduana de una
+// Referencia Operativa (NO CfoNetCore.dbo.Sitio/OficinaVenta, que es otra cosa).
+router.get("/aduanas", requireAuth, requireAdmin, (req, res) => {
+    const lista = Object.entries(ADUANAS_CANONICAS)
+        .map(([clave, a]) => ({ clave, label: a.label }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+    res.json(lista);
+});
+
+router.put("/usuarios/:id/oficinas", requireAuth, requireAdmin, (req, res) => {
+    const usuarioId = Number(req.params.id);
+    const { oficinas } = req.body;
+
+    asignarOficinas(usuarioId, oficinas);
+
+    const usuario = authDb.prepare(`SELECT nombre_completo FROM usuarios WHERE id = ?`).get(usuarioId);
+    registrarActividad({
+        usuarioId: req.user.id,
+        usuarioNombre: req.user.nombreCompleto,
+        areaKey: "admin",
+        areaLabel: "Administración",
+        moduloKey: "usuarios",
+        moduloLabel: "Usuarios",
+        accion: (oficinas || []).length > 0 ? `Restringió a ${(oficinas || []).length} Oficina(s) de Venta` : "Quitó la restricción por Oficina de Venta",
+        referencia: usuario?.nombre_completo || ""
+    });
+
+    res.json({ Message: "ok", oficinasPermitidas: obtenerOficinasPermitidas(usuarioId) });
 });
 
 router.post("/usuarios", requireAuth, requireAdmin, async (req, res) => {
     try {
-        const { nombreUsuario, nombreCompleto, correo, personaId, password, isAdmin, permisos } = req.body;
+        const { nombreUsuario, nombreCompleto, correo, personaId, password, isAdmin, permisos, oficinas } = req.body;
         if (!nombreUsuario?.trim() || !nombreCompleto?.trim() || !password) {
             return res.status(400).json({ Message: "Usuario, nombre completo y contraseña son requeridos." });
         }
@@ -142,6 +176,7 @@ router.post("/usuarios", requireAuth, requireAdmin, async (req, res) => {
         for (const p of (permisos || [])) {
             insertPermiso.run(usuarioId, p.area, p.modulo);
         }
+        asignarOficinas(usuarioId, oficinas);
 
         registrarActividad({
             usuarioId: req.user.id,

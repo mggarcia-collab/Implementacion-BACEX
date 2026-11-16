@@ -53,6 +53,11 @@ export default function AlertasCampana() {
 
   useEffect(() => {
     cargarPendientes();
+    // Refresco en segundo plano: así el número rojo de la campanita (y el aviso de un
+    // ticket nuevo) aparece solo mientras se trabaja en otra pantalla, sin tener que
+    // abrir el desplegable para "preguntar" si hay algo nuevo.
+    const intervalo = setInterval(cargarPendientes, 20000);
+    return () => clearInterval(intervalo);
   }, []);
 
   useEffect(() => {

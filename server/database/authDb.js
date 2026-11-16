@@ -59,6 +59,20 @@ authDb.exec(`
     created_date TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Restringe a un usuario a ver/operar solo las Referencias Operativas de ciertas Aduanas
+  -- (claves canónicas de server/aduanas.js, ej. "laMesa" -- resueltas contra
+  -- HojaDeRuta.dbo.HojaRuta.AduanaDescripcion, NO contra CfoNetCore.Sitio/OficinaVenta, que es
+  -- un campo distinto). Si un usuario no tiene ninguna fila aquí, no está restringido (ve
+  -- todo) -- así ningún usuario existente pierde acceso sin que un admin lo configure.
+  -- El nombre de columna "oficina_venta" quedó de un diseño anterior; ya no guarda códigos de
+  -- OficinaVenta, solo claves de Aduana -- no se renombró para no migrar datos existentes.
+  CREATE TABLE IF NOT EXISTS usuario_oficinas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    oficina_venta TEXT NOT NULL,
+    UNIQUE(usuario_id, oficina_venta)
+  );
+
   CREATE TABLE IF NOT EXISTS alertas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
@@ -124,6 +138,22 @@ try {
   authDb.exec(`ALTER TABLE actividad ADD COLUMN datos_despues TEXT`);
 } catch {
   // La columna ya existe, no hay nada que hacer.
+}
+
+// null = sin restricción (ve todas las Aduanas/Oficinas, el comportamiento de siempre);
+// array = restringido solo a esos códigos de OficinaVenta.
+export function obtenerOficinasPermitidas(usuarioId) {
+  const filas = authDb.prepare(`SELECT oficina_venta FROM usuario_oficinas WHERE usuario_id = ?`).all(usuarioId);
+  return filas.length > 0 ? filas.map((f) => f.oficina_venta) : null;
+}
+
+export function asignarOficinas(usuarioId, oficinas) {
+  authDb.prepare(`DELETE FROM usuario_oficinas WHERE usuario_id = ?`).run(usuarioId);
+  const insertar = authDb.prepare(`INSERT OR IGNORE INTO usuario_oficinas (usuario_id, oficina_venta) VALUES (?, ?)`);
+  for (const codigo of (oficinas || [])) {
+    const limpio = String(codigo || "").trim();
+    if (limpio) insertar.run(usuarioId, limpio);
+  }
 }
 
 export function getPermisosDeUsuario(usuarioId) {
@@ -193,7 +223,9 @@ export async function registrarActividad({ usuarioId, usuarioNombre, areaKey, ar
 // Usado para resolver, a partir de un correo fijo (ej. destinatarios de una alerta de
 // negocio), a qué usuario de BAC-EX le corresponde crearle la alerta dentro de la app.
 export function resolverUsuarioIdPorCorreo(correo) {
-  const fila = authDb.prepare(`SELECT id FROM usuarios WHERE correo = ?`).get(correo);
+  // Comparación sin distinguir mayúsculas/minúsculas: el correo puede llegar con otra
+  // capitalización (ej. desde un flujo de Power Automate) que la guardada en el usuario.
+  const fila = authDb.prepare(`SELECT id FROM usuarios WHERE LOWER(correo) = LOWER(?)`).get(correo);
   return fila?.id || null;
 }
 

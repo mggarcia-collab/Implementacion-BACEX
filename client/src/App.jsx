@@ -215,17 +215,27 @@ function AppShell() {
         {/* SIDEBAR NAVEGACIÓN GLOBAL */}
         {!sidebarOpen && (
           <div className="sidebar-collapsed-rail">
-            {visibleAreas.cfo && (
-              <div className="mod-icon blue" style={{ cursor: "pointer" }} title="CFO" onClick={() => handleRailClick("cfo")}>📊</div>
-            )}
-            {visibleAreas.red && (
-              <div className="mod-icon green" style={{ cursor: "pointer" }} title="Análisis de Red" onClick={() => handleRailClick("red")}>🔗</div>
-            )}
-            {visibleAreas.errores25 && (
-              <div className="mod-icon red" style={{ cursor: "pointer" }} title="Errores" onClick={() => handleRailClick("errores25")}>⚠️</div>
-            )}
-            {usuario.isAdmin && (
-              <div className="mod-icon amber" style={{ cursor: "pointer" }} title="Administración" onClick={() => handleRailClick(ADMIN_KEY)}>👤</div>
+            <div className="sidebar-collapsed-rail-main">
+              {visibleAreas.cfo && (
+                <div className="mod-icon blue" style={{ cursor: "pointer" }} title="CFO" onClick={() => handleRailClick("cfo")}>📊</div>
+              )}
+              {visibleAreas.red && (
+                <div className="mod-icon green" style={{ cursor: "pointer" }} title="Análisis de Red" onClick={() => handleRailClick("red")}>🔗</div>
+              )}
+              {visibleAreas.errores25 && (
+                <div className="mod-icon red" style={{ cursor: "pointer" }} title="Errores" onClick={() => handleRailClick("errores25")}>⚠️</div>
+              )}
+              {usuario.isAdmin && (
+                <div className="mod-icon amber" style={{ cursor: "pointer" }} title="Administración" onClick={() => handleRailClick(ADMIN_KEY)}>👤</div>
+              )}
+            </div>
+            {/* Soporte queda aparte, pegado abajo del todo (separado con línea), para que no
+                se confunda con las áreas de negocio del resto de la lista. Navega directo
+                (no abre el sidebar a desplegar un submenú) porque solo tiene un módulo. */}
+            {visibleAreas.soporte && (
+              <div className="sidebar-collapsed-rail-footer">
+                <div className="mod-icon purple" style={{ cursor: "pointer" }} title="Soporte" onClick={() => handleSelectModule("soporte", "incidentes")}>🎫</div>
+              </div>
             )}
             {usuario.isAdmin && (
               <div className="mod-icon" style={{ cursor: "pointer" }} title="Bitácora" onClick={() => handleSelectModule(BITACORA_KEY, "bitacora")}>{bitacoraArea.icon}</div>
@@ -233,6 +243,7 @@ function AppShell() {
           </div>
         )}
         <aside className="sidebar" style={sidebarOpen ? undefined : { display: "none" }}>
+        <div className="sidebar-main">
           <div className="sidebar-label">
             <span>Módulos</span>
           </div>
@@ -293,6 +304,23 @@ function AppShell() {
               <div className="mod-name"><strong>Bitácora</strong><span>{bitacoraArea.modules.bitacora.desc}</span></div>
             </div>
           )}
+        </div>
+
+        {/* Soporte queda aparte, pegado abajo del todo (separado con línea), para que no se
+            confunda con las áreas de negocio del resto de la lista. Como solo tiene un único
+            módulo (Incidentes), el botón navega directo en vez de desplegar un submenú con
+            un solo renglón redundante. */}
+        {visibleAreas.soporte && (
+          <div className="sidebar-footer">
+            <div
+              className={`mod-item m-soporte${activeArea === "soporte" ? " active" : ""}`}
+              onClick={() => handleSelectModule("soporte", "incidentes")}
+            >
+              <div className="mod-icon purple">🎫</div>
+              <div className="mod-name"><strong>Soporte</strong><span>Incidentes</span></div>
+            </div>
+          </div>
+        )}
         </aside>
 
         <main className="content" style={{ position: "relative" }}>

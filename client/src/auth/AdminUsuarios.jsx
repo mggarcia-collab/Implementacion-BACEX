@@ -202,6 +202,50 @@ function PermisosChecklist({ selected, onChange, disabled }) {
   );
 }
 
+// Lista de Aduanas a las que está restringido un usuario. Sin ninguna marcada significa "sin
+// restricción" (ve todas, igual que hoy) -- se avisa en el propio checklist para que no
+// parezca un bloqueo total por accidente.
+function OficinasChecklist({ catalogo, selected, onChange, disabled }) {
+  const [filtro, setFiltro] = useState("");
+  const filtrado = filtro.trim()
+    ? catalogo.filter((o) => o.label.toLowerCase().includes(filtro.trim().toLowerCase()))
+    : catalogo;
+
+  return (
+    <div>
+      <p style={{ fontSize: "12px", color: "#697386", marginBottom: "8px" }}>
+        Sin ninguna marcada, el usuario ve Referencias Operativas de <strong>todas</strong> las Aduanas (sin restricción).
+        Marcando una o varias, solo verá las de esas Aduanas.
+      </p>
+      <input
+        type="text"
+        placeholder="Filtrar por nombre..."
+        value={filtro}
+        onChange={(e) => setFiltro(e.target.value)}
+        disabled={disabled}
+        style={{ width: "260px", padding: "6px 10px", fontSize: "12.5px", border: "1px solid #dcdfe6", borderRadius: "6px", marginBottom: "10px" }}
+      />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", maxHeight: "220px", overflowY: "auto", border: "1px solid #eef1f5", borderRadius: "8px", padding: "10px" }}>
+        {catalogo.length === 0 && <span style={{ fontSize: "12.5px", color: "#94a3b8" }}>Cargando catálogo de Aduanas...</span>}
+        {filtrado.map((o) => (
+          <label key={o.clave} title={o.label} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#334155", width: "260px" }}>
+            <input
+              type="checkbox"
+              checked={selected.has(o.clave)}
+              disabled={disabled}
+              style={{ flexShrink: 0 }}
+              onChange={(e) => onChange(o.clave, e.target.checked)}
+            />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+              {o.label}
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export const meta = {
   label: "Usuarios",
   icon: "👤",
@@ -220,11 +264,14 @@ export default function AdminUsuarios() {
   const [password, setPassword] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [permisos, setPermisos] = useState(() => new Set());
+  const [oficinas, setOficinas] = useState(() => new Set());
   const [creando, setCreando] = useState(false);
 
   const [editingUserId, setEditingUserId] = useState(null);
   const [editingPermisos, setEditingPermisos] = useState(() => new Set());
+  const [editingOficinas, setEditingOficinas] = useState(() => new Set());
   const [savingPermisos, setSavingPermisos] = useState(false);
+  const [catalogoOficinas, setCatalogoOficinas] = useState([]);
 
   const [editingPasswordUserId, setEditingPasswordUserId] = useState(null);
   const [nuevaPassword, setNuevaPassword] = useState("");
@@ -255,6 +302,17 @@ export default function AdminUsuarios() {
 
   useEffect(() => {
     cargarUsuarios();
+    // Catálogo para el checklist de "Oficinas permitidas" -- se carga una sola vez, no
+    // cambia mientras se editan usuarios.
+    (async () => {
+      try {
+        const response = await apiFetch("/auth/aduanas");
+        const data = await response.json().catch(() => []);
+        if (response.ok) setCatalogoOficinas(Array.isArray(data) ? data : []);
+      } catch {
+        // Si falla, el checklist se queda vacío/"Cargando..." -- no bloquea el resto de la pantalla.
+      }
+    })();
   }, []);
 
   const handleSeleccionarPersona = (persona) => {
@@ -272,6 +330,14 @@ export default function AdminUsuarios() {
     });
   };
 
+  const toggleOficina = (oficinaVenta, checked) => {
+    setOficinas((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(oficinaVenta); else next.delete(oficinaVenta);
+      return next;
+    });
+  };
+
   const limpiarFormulario = () => {
     setNombreUsuario("");
     setNombreCompleto("");
@@ -280,6 +346,7 @@ export default function AdminUsuarios() {
     setPassword("");
     setIsAdmin(false);
     setPermisos(new Set());
+    setOficinas(new Set());
   };
 
   const handleCrear = async (e) => {
@@ -304,7 +371,8 @@ export default function AdminUsuarios() {
           personaId,
           password,
           isAdmin,
-          permisos: permisosArray
+          permisos: permisosArray,
+          oficinas: [...oficinas]
         })
       });
       const data = await response.json().catch(() => null);
@@ -334,13 +402,26 @@ export default function AdminUsuarios() {
   const abrirEdicionPermisos = (usuario) => {
     setEditingUserId(usuario.id);
     setEditingPermisos(new Set(usuario.permisos.map((p) => permisoKey(p.area, p.modulo))));
+    setEditingOficinas(new Set(usuario.oficinasPermitidas || []));
   };
 
   const cancelarEdicionPermisos = () => {
     setEditingUserId(null);
     setEditingPermisos(new Set());
+    setEditingOficinas(new Set());
   };
 
+  const toggleEditingOficina = (oficinaVenta, checked) => {
+    setEditingOficinas((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(oficinaVenta); else next.delete(oficinaVenta);
+      return next;
+    });
+  };
+
+  // Guarda permisos de módulo y Oficinas permitidas juntos (un solo botón en pantalla),
+  // aunque sean dos endpoints distintos -- evita que quede ambiguo cuál de los dos quedó
+  // guardado si solo uno fallara.
   const guardarPermisos = async (usuarioId) => {
     setSavingPermisos(true);
     try {
@@ -353,18 +434,30 @@ export default function AdminUsuarios() {
       const usuarioActual = usuarios.find((u) => u.id === usuarioId);
       const antesPermisos = formatearPermisosParaBitacora(usuarioActual?.permisos);
       const despuesPermisos = formatearPermisosParaBitacora(permisosArray);
-      const response = await apiFetch(`/auth/usuarios/${usuarioId}/permisos`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ permisos: permisosArray, antesPermisos, despuesPermisos })
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        showToast(data?.Message || "No se pudieron actualizar los permisos", "warn");
+      const oficinasArray = [...editingOficinas];
+
+      const [respPermisos, respOficinas] = await Promise.all([
+        apiFetch(`/auth/usuarios/${usuarioId}/permisos`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ permisos: permisosArray, antesPermisos, despuesPermisos })
+        }),
+        apiFetch(`/auth/usuarios/${usuarioId}/oficinas`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ oficinas: oficinasArray })
+        })
+      ]);
+      const dataPermisos = await respPermisos.json().catch(() => null);
+      const dataOficinas = await respOficinas.json().catch(() => null);
+      if (!respPermisos.ok || !respOficinas.ok) {
+        showToast((!respPermisos.ok ? dataPermisos?.Message : dataOficinas?.Message) || "No se pudieron actualizar los accesos", "warn");
         return;
       }
-      setUsuarios((prev) => prev.map((u) => (u.id === usuarioId ? { ...u, permisos: permisosArray } : u)));
-      showToast("✓ Permisos actualizados", "ok");
+      setUsuarios((prev) => prev.map((u) => (
+        u.id === usuarioId ? { ...u, permisos: permisosArray, oficinasPermitidas: oficinasArray.length > 0 ? oficinasArray : null } : u
+      )));
+      showToast("✓ Accesos actualizados", "ok");
       cancelarEdicionPermisos();
     } catch (error) {
       showToast("⚠️ Error de conexión con el servidor", "warn");
@@ -542,6 +635,15 @@ export default function AdminUsuarios() {
           </div>
         )}
 
+        {!isAdmin && (
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Aduanas permitidas
+            </label>
+            <OficinasChecklist catalogo={catalogoOficinas} selected={oficinas} onChange={toggleOficina} disabled={creando} />
+          </div>
+        )}
+
         <button className="btn primary" type="submit" disabled={creando}>
           {creando ? "Creando..." : "Crear usuario"}
         </button>
@@ -574,7 +676,14 @@ export default function AdminUsuarios() {
                     <td>{u.nombreCompleto}</td>
                     <td>{u.correo || "—"}</td>
                     <td>{u.isAdmin ? "Administrador" : "Estándar"}</td>
-                    <td>{u.isAdmin ? "Todos" : (u.permisos.length || "Ninguno")}</td>
+                    <td>
+                      {u.isAdmin ? "Todos" : (u.permisos.length || "Ninguno")}
+                      {!u.isAdmin && u.oficinasPermitidas && (
+                        <div style={{ fontSize: "11px", color: "#b45309", marginTop: "2px" }}>
+                          🛃 Restringido a {u.oficinasPermitidas.length} Aduana{u.oficinasPermitidas.length !== 1 ? "s" : ""}
+                        </div>
+                      )}
+                    </td>
                     <td>{u.activo ? "Activo" : "Inactivo"}</td>
                     <td style={{ textAlign: "right", display: "flex", gap: "8px", justifyContent: "flex-end" }}>
                       <IconButton
@@ -655,9 +764,13 @@ export default function AdminUsuarios() {
                           Permisos de {u.nombreCompleto}
                         </div>
                         <PermisosChecklist selected={editingPermisos} onChange={toggleEditingPermiso} disabled={savingPermisos} />
+                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", marginTop: "20px", marginBottom: "12px" }}>
+                          Aduanas permitidas
+                        </div>
+                        <OficinasChecklist catalogo={catalogoOficinas} selected={editingOficinas} onChange={toggleEditingOficina} disabled={savingPermisos} />
                         <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
                           <button className="btn primary" onClick={() => guardarPermisos(u.id)} disabled={savingPermisos} style={{ padding: "6px 14px", fontSize: "12px" }}>
-                            {savingPermisos ? "Guardando..." : "Guardar permisos"}
+                            {savingPermisos ? "Guardando..." : "Guardar accesos"}
                           </button>
                           <button className="btn ghost" onClick={cancelarEdicionPermisos} disabled={savingPermisos} style={{ padding: "6px 14px", fontSize: "12px" }}>
                             Cancelar

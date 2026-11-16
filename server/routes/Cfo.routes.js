@@ -3,6 +3,7 @@ import { conexion, BasesDeDatos } from '../database/database.js'
 import sql from 'mssql'
 import { requireAuth, requirePermission } from '../middleware/auth.js'
 import { registrarActividad, authDb, crearAlerta, resolverUsuarioIdPorCorreo } from '../database/authDb.js'
+import { aduanaCanonicaDeTexto } from '../aduanas.js'
 
 const app = Router();
 app.use(requireAuth);
@@ -14,6 +15,81 @@ function mensajeDeAzure(data) {
     if (!data) return null;
     if (Array.isArray(data.Message)) return data.Message.length ? data.Message.join(' ') : null;
     return data.Message || null;
+}
+
+// Mensaje mostrado cuando una Referencia/Documento/Línea existe pero su Aduana (según Hoja de
+// Ruta) no es una de las que tiene asignadas el usuario -- explícito a propósito (en vez de
+// "no encontrado") para que el usuario sepa que es un tema de asignación, no que el dato no
+// exista.
+const MENSAJE_FUERA_DE_ADUANA = "Esta HR no pertenece a las Aduanas que tu usuario tiene asignadas.";
+
+// Resuelve, de un conjunto de Referencias Operativas, cuáles están dentro de las Aduanas
+// permitidas del usuario (ver server/aduanas.js y Administración → Usuarios → Aduanas
+// permitidas). La Aduana real de una Referencia vive en
+// HojaDeRuta.dbo.HojaRuta.AduanaDescripcion (texto libre) -- NO en
+// CfoNetCore.SalesOrder.OficinaVenta, que es un campo distinto (confirmado con un caso real
+// donde no coincidían). CfoNetCore y HojaDeRuta son bases separadas en el mismo servidor;
+// Azure SQL no permite JOIN entre ellas, así que se resuelve en dos pasos (se consulta
+// HojaDeRuta aparte y se cruza en código), igual que ya hace el resto de la app entre
+// Personas/CfoNetCore (ver docProvisionalBuscarProveedores).
+// Devuelve null si el usuario no está restringido (admin o sin ninguna Aduana asignada) --
+// usar las referencias tal cual. Si está restringido, devuelve el Set de las que sí puede ver.
+async function referenciasPermitidasPorAduana(req, referencias) {
+    if (req.user?.isAdmin) return null;
+    const clavesPermitidas = req.user?.oficinasPermitidas;
+    if (!clavesPermitidas || clavesPermitidas.length === 0) return null;
+
+    const listaUnica = [...new Set((referencias || []).filter(Boolean))];
+    if (listaUnica.length === 0) return new Set();
+
+    const pool = await conexion(BasesDeDatos.HojaDeRuta);
+    const request = pool.request();
+    const parametros = listaUnica.map((valor, i) => {
+        const nombre = `hr${i}`;
+        request.input(nombre, sql.VarChar, valor);
+        return `@${nombre}`;
+    });
+    const resultado = await request.query(`
+        SELECT NumeroHojaRuta, AduanaDescripcion FROM HojaRuta WHERE NumeroHojaRuta IN (${parametros.join(", ")})
+    `);
+
+    const clavesSet = new Set(clavesPermitidas);
+    const permitidas = new Set();
+    for (const fila of resultado.recordset) {
+        const clave = aduanaCanonicaDeTexto(fila.AduanaDescripcion);
+        if (clave && clavesSet.has(clave)) permitidas.add(fila.NumeroHojaRuta);
+    }
+    return permitidas;
+}
+
+// Igual que referenciasPermitidasPorAduana, pero para una sola Referencia Operativa -- true
+// si está permitida (o si el usuario no está restringido), false si no.
+async function referenciaPermitidaPorAduana(req, referenciaOperativa) {
+    const permitidas = await referenciasPermitidasPorAduana(req, [referenciaOperativa]);
+    return permitidas === null || permitidas.has(referenciaOperativa);
+}
+
+// Igual que referenciaPermitidaPorAduana, pero para endpoints de Línea de Material que reciben
+// solo el Id de la línea (LineaMaterialFlat/LineaMaterialVariable), no la Referencia Operativa
+// -- se resuelve primero vía SalesOrderDetalle → SalesOrder.
+async function lineaMaterialPermitidaPorAduana(req, tipoKey, id) {
+    if (req.user?.isAdmin) return true;
+    if (!req.user?.oficinasPermitidas || req.user.oficinasPermitidas.length === 0) return true;
+
+    const tabla = tipoKey === 'fijo' ? 'LineaMaterialFlat' : 'LineaMaterialVariable';
+    const pool = await conexion(BasesDeDatos.CfoNetCore);
+    const resultado = await pool.request()
+        .input('id', sql.UniqueIdentifier, id)
+        .query(`
+            SELECT SO.ReferenciaOperativa
+            FROM [dbo].[${tabla}] LM
+            JOIN [dbo].[SalesOrderDetalle] SD ON SD.Id = LM.SalesOrderDetalleId
+            JOIN [dbo].[SalesOrder] SO ON SO.Id = SD.SalesOrderId
+            WHERE LM.Id = @id
+        `);
+    const referencia = resultado.recordset[0]?.ReferenciaOperativa;
+    if (!referencia) return false;
+    return referenciaPermitidaPorAduana(req, referencia);
 }
 
 // RegistroContable.ModifiedBy (CfoNetCore) guarda el mismo Id de Persona que usuarios.persona_id
@@ -117,6 +193,10 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
         }
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
+        }
+
+        if (!(await referenciaPermitidaPorAduana(req, ReferenciaOperativa))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         // 1. Consultar el estado actual en la BD
@@ -230,10 +310,12 @@ function normalizarIndicadorImpuesto(valor) {
 
 app.post('/buscarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicadorImpuesto'), async (req, res) => {
     try {
-        const referencias = normalizarLista(req.body.referencias, req.body.referencia);
-        if (referencias.length === 0) {
+        const referenciasPedidas = normalizarLista(req.body.referencias, req.body.referencia);
+        if (referenciasPedidas.length === 0) {
             return res.status(400).json({ Message: "Ingrese al menos una Referencia Operativa." });
         }
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, referenciasPedidas);
+        const referencias = permitidasAduana === null ? referenciasPedidas : referenciasPedidas.filter((r) => permitidasAduana.has(r));
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();
@@ -242,7 +324,7 @@ app.post('/buscarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicad
             request.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
-        const resultado = await request.query(`
+        const resultado = referencias.length === 0 ? { recordset: [] } : await request.query(`
             SELECT [ReferenciaOperativa], [IndicadorImpuestoCabecera], [Status_Value]
             FROM [dbo].[SalesOrder]
             WHERE [ReferenciaOperativa] IN (${parametros.join(", ")}) AND [IsSoftDeleted] = 0
@@ -258,7 +340,7 @@ app.post('/buscarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicad
                 StatusValue: r.Status_Value
             };
         });
-        const noEncontradas = referencias.filter((r) => !encontradas.has(r));
+        const noEncontradas = referenciasPedidas.filter((r) => !encontradas.has(r));
 
         return res.json({ Filas: filas, NoEncontradas: noEncontradas });
     } catch (error) {
@@ -272,10 +354,10 @@ app.post('/buscarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicad
 // consultar; aplicar el cambio requiere además "indicadorImpuestoModificar".
 app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indicadorImpuestoModificar'), async (req, res) => {
     try {
-        const referencias = normalizarLista(req.body.referencias, req.body.referencia);
+        const referenciasPedidas = normalizarLista(req.body.referencias, req.body.referencia);
         const { Indicador, ModifiedBy } = req.body;
 
-        if (referencias.length === 0) {
+        if (referenciasPedidas.length === 0) {
             return res.status(400).json({ Message: "Ingrese al menos una Referencia Operativa." });
         }
         if (Indicador !== 0 && Indicador !== 1) {
@@ -284,6 +366,9 @@ app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indica
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
+
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, referenciasPedidas);
+        const referencias = permitidasAduana === null ? referenciasPedidas : referenciasPedidas.filter((r) => permitidasAduana.has(r));
 
         // Revalida justo antes de aplicar (no confiar solo en la búsqueda que ya se hizo en
         // pantalla) para no mandarle a Azure referencias que ya no existen o se eliminaron.
@@ -294,13 +379,13 @@ app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indica
             request.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
-        const validacion = await request.query(`
+        const validacion = referencias.length === 0 ? { recordset: [] } : await request.query(`
             SELECT [ReferenciaOperativa], [IndicadorImpuestoCabecera]
             FROM [dbo].[SalesOrder]
             WHERE [ReferenciaOperativa] IN (${parametros.join(", ")}) AND [IsSoftDeleted] = 0
         `);
         const encontradas = validacion.recordset.map((r) => r.ReferenciaOperativa);
-        const noEncontradas = referencias.filter((r) => !encontradas.includes(r));
+        const noEncontradas = referenciasPedidas.filter((r) => !encontradas.includes(r));
         // Solo para la bitácora: valores antes de aplicar el nuevo Indicador (puede venir
         // distinto en cada Sales Order, por eso se listan todos en vez de uno solo).
         const indicadorAnteriorTexto = validacion.recordset
@@ -426,7 +511,23 @@ app.post('/documentosPorReferencia', requirePermission('cfo', 'habDoc'), async (
                 ORDER BY d.ReferenciaOperativa ASC, MP.Descripcion ASC
             `);
 
-        return res.json(resultado.recordset);
+        // Se filtra por Aduana DESPUÉS de traer los resultados (no antes) porque esta búsqueda
+        // acepta varios tipos de criterio (SP, Documento Fiscal/SAP) además de Referencia
+        // Operativa -- no se sabe qué Referencia va a traer cada fila hasta que la consulta
+        // ya corrió.
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, resultado.recordset.map((r) => r.Referencia_Operativa));
+        const filas = permitidasAduana === null
+            ? resultado.recordset
+            : resultado.recordset.filter((r) => permitidasAduana.has(r.Referencia_Operativa));
+
+        // Si la consulta sin filtrar sí encontró algo pero quedó todo fuera al filtrar por
+        // Aduana, se avisa eso puntualmente en vez de devolver una lista vacía sin explicación
+        // (que se ve igual que "no hay resultados").
+        if (resultado.recordset.length > 0 && filas.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
+
+        return res.json(filas);
 
     } catch (error) {
         console.error("Error en documentosPorReferencia:", error);
@@ -459,7 +560,7 @@ app.post('/codigosErpPorReferencia', requirePermission('cfo', 'habDoc'), async (
         }, "erp");
 
         const resultado = await request.query(`
-            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
+            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp, d.ReferenciaOperativa
             FROM Documento d
             LEFT JOIN SolicitudDePago AS sp ON (d.Id = sp.Id)
             LEFT JOIN RegistroContable rc ON (d.RegistroContableId = rc.Id)
@@ -469,10 +570,18 @@ app.post('/codigosErpPorReferencia', requirePermission('cfo', 'habDoc'), async (
             WHERE (${condiciones.join(" OR ")})
               AND d.IsSoftDeleted = 0
               AND MT.CodigoErpReembolso IS NOT NULL
-            ORDER BY MT.CodigoErpReembolso ASC
         `);
 
-        return res.json(resultado.recordset.map((r) => r.CodigoErp));
+        // Mismo motivo que documentosPorReferencia: se filtra por Aduana después, ya que el
+        // criterio de búsqueda puede no ser la Referencia Operativa.
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, resultado.recordset.map((r) => r.ReferenciaOperativa));
+        const codigosPermitidos = new Set(
+            resultado.recordset
+                .filter((r) => permitidasAduana === null || permitidasAduana.has(r.ReferenciaOperativa))
+                .map((r) => r.CodigoErp)
+        );
+
+        return res.json([...codigosPermitidos].sort());
 
     } catch (error) {
         console.error("Error en codigosErpPorReferencia:", error);
@@ -507,6 +616,9 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
 
         const status = String(validacion.recordset[0].ReembolsoStatus_Value).trim();
         const referenciaOperativa = validacion.recordset[0].ReferenciaOperativa;
+        if (!(await referenciaPermitidaPorAduana(req, referenciaOperativa))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         // 2. Aplicar regla de negocio (Solo permitir si el estado es 0 = Inhabilitado)
         if (status === '1') {
@@ -591,6 +703,9 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
 
         const status = String(validacion.recordset[0].ReembolsoStatus_Value).trim();
         const referenciaOperativa = validacion.recordset[0].ReferenciaOperativa;
+        if (!(await referenciaPermitidaPorAduana(req, referenciaOperativa))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         // 2. Aplicar regla de negocio (Solo permitir si el estado es 1 = Habilitado)
         if (status === '0') {
@@ -718,7 +833,16 @@ app.post('/documentosParaEliminar', requirePermission('cfo', 'elimDoc'), async (
                 ORDER BY d.ReferenciaOperativa ASC, MP.Descripcion ASC
             `);
 
-        return res.json(resultado.recordset);
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, resultado.recordset.map((r) => r.Referencia_Operativa));
+        const filas = permitidasAduana === null
+            ? resultado.recordset
+            : resultado.recordset.filter((r) => permitidasAduana.has(r.Referencia_Operativa));
+
+        if (resultado.recordset.length > 0 && filas.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
+
+        return res.json(filas);
 
     } catch (error) {
         console.error("Error en documentosParaEliminar:", error);
@@ -751,7 +875,7 @@ app.post('/codigosErpParaEliminar', requirePermission('cfo', 'elimDoc'), async (
         }, "erp");
 
         const resultado = await request.query(`
-            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp
+            SELECT DISTINCT MT.CodigoErpReembolso AS CodigoErp, d.ReferenciaOperativa
             FROM Documento d
             LEFT JOIN SolicitudDePago AS sp ON (d.Id = sp.Id)
             LEFT JOIN RegistroContable rc ON (d.RegistroContableId = rc.Id)
@@ -761,10 +885,16 @@ app.post('/codigosErpParaEliminar', requirePermission('cfo', 'elimDoc'), async (
             WHERE (${condiciones.join(" OR ")})
               AND d.IsSoftDeleted = '0'
               AND MT.CodigoErpReembolso IS NOT NULL
-            ORDER BY MT.CodigoErpReembolso ASC
         `);
 
-        return res.json(resultado.recordset.map((r) => r.CodigoErp));
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, resultado.recordset.map((r) => r.ReferenciaOperativa));
+        const codigosPermitidos = new Set(
+            resultado.recordset
+                .filter((r) => permitidasAduana === null || permitidasAduana.has(r.ReferenciaOperativa))
+                .map((r) => r.CodigoErp)
+        );
+
+        return res.json([...codigosPermitidos].sort());
 
     } catch (error) {
         console.error("Error en codigosErpParaEliminar:", error);
@@ -798,6 +928,9 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
 
         if (validacion.recordset.length === 0) {
             return res.status(404).json({ Message: "No se encontró el documento." });
+        }
+        if (!(await referenciaPermitidaPorAduana(req, validacion.recordset[0].ReferenciaOperativa))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const { IsSoftDeleted, Discriminator, ReferenciaOperativa: referenciaOperativa } = validacion.recordset[0];
@@ -1574,8 +1707,10 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
         `);
 
         const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || []), ...(resultado.recordsets[3] || []), ...(resultado.recordsets[4] || [])];
-        const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
-        const facturas = crudas.map((f) => ({
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, crudas.map((f) => f.ReferenciaOperativa));
+        const crudasPermitidas = permitidasAduana === null ? crudas : crudas.filter((f) => permitidasAduana.has(f.ReferenciaOperativa));
+        const nombresPorId = await resolverNombresPorPersonaId(crudasPermitidas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
+        const facturas = crudasPermitidas.map((f) => ({
             Tipo: f.Tipo,
             ReferenciaOperativa: f.ReferenciaOperativa,
             NumeroFacturaSap: f.NumeroFacturaSap,
@@ -1583,6 +1718,11 @@ app.post('/facturasPorReferencia', requirePermission('cfo', 'anulacionFacturas')
             AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
             AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
         }));
+
+        if (crudas.length > 0 && crudasPermitidas.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
+
         const facturasConValidacion = await adjuntarInconsistenciasFactura(pool, facturas, req);
         return res.json(facturasConValidacion);
 
@@ -1639,8 +1779,10 @@ app.post('/facturasPorNumero', requirePermission('cfo', 'anulacionFacturas'), as
         `);
 
         const crudas = [...(resultado.recordsets[0] || []), ...(resultado.recordsets[1] || []), ...(resultado.recordsets[2] || [])];
-        const nombresPorId = await resolverNombresPorPersonaId(crudas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
-        const resultados = crudas.map((f) => ({
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, crudas.map((f) => f.ReferenciaOperativa));
+        const crudasPermitidas = permitidasAduana === null ? crudas : crudas.filter((f) => permitidasAduana.has(f.ReferenciaOperativa));
+        const nombresPorId = await resolverNombresPorPersonaId(crudasPermitidas.filter((f) => f.IsSoftDeleted).map((f) => f.ModifiedBy), pool);
+        const resultados = crudasPermitidas.map((f) => ({
             Tipo: f.Tipo,
             ReferenciaOperativa: f.ReferenciaOperativa,
             NumeroFacturaSap: f.NumeroFacturaSap,
@@ -1648,6 +1790,11 @@ app.post('/facturasPorNumero', requirePermission('cfo', 'anulacionFacturas'), as
             AnuladoPor: f.IsSoftDeleted ? (nombresPorId[String(f.ModifiedBy).toUpperCase()] || null) : null,
             AnuladoFecha: f.IsSoftDeleted ? f.ModifiedDate : null,
         }));
+
+        if (crudas.length > 0 && crudasPermitidas.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
+
         const resultadosConValidacion = await adjuntarInconsistenciasFactura(pool, resultados, req);
         return res.json(resultadosConValidacion);
 
@@ -1807,6 +1954,38 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
             return res.status(400).json({ Message: "Tu usuario autorizador no tiene un correo configurado. Pide a un administrador que lo agregue en Administración → Autorizadores." });
         }
 
+        // Si el usuario está restringido por Aduana, revalida que cada factura pertenezca a una
+        // Aduana permitida ANTES de pedirle a Azure que la anule -- a diferencia de
+        // facturasPorReferencia/facturasPorNumero, este endpoint llama a Azure directo sin
+        // consultar antes la BD, así que sin esto un usuario restringido podría anular facturas
+        // fuera de su Aduana con solo escribir el número a mano.
+        if (req.user?.oficinasPermitidas && req.user.oficinasPermitidas.length > 0 && !req.user?.isAdmin) {
+            const poolValidacionOficina = await conexion(BasesDeDatos.CfoNetCore);
+            const requestValidacionOficina = poolValidacionOficina.request();
+            const parametrosFacturasOficina = facturas.map((valor, i) => {
+                const nombre = `facOf${i}`;
+                requestValidacionOficina.input(nombre, sql.VarChar, valor);
+                return `@${nombre}`;
+            });
+            const referenciasPorFactura = await requestValidacionOficina.query(`
+                SELECT RC.NumeroFacturaSap, COALESCE(SO.ReferenciaOperativa, D.ReferenciaOperativa, RC.ReferenciaOperativa) AS ReferenciaOperativa
+                FROM dbo.RegistroContable RC
+                LEFT JOIN dbo.SalesOrder SO ON SO.RegistroContableId = RC.Id
+                LEFT JOIN dbo.Documento D ON D.RegistroContableFacturaId = RC.Id
+                WHERE RC.NumeroFacturaSap IN (${parametrosFacturasOficina.join(", ")})
+            `);
+            const permitidasAduana = await referenciasPermitidasPorAduana(req, referenciasPorFactura.recordset.map((r) => r.ReferenciaOperativa));
+            const facturasPermitidas = new Set(
+                referenciasPorFactura.recordset
+                    .filter((r) => permitidasAduana === null || permitidasAduana.has(r.ReferenciaOperativa))
+                    .map((r) => r.NumeroFacturaSap)
+            );
+            const facturasFueraDeAlcance = facturas.filter((f) => !facturasPermitidas.has(f));
+            if (facturasFueraDeAlcance.length > 0) {
+                return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+            }
+        }
+
         const resp = await fetch("https://cfows.azurewebsites.net/api/RegistroContable/HabilitarParaRefacturacion", {
             method: "POST",
             headers: {
@@ -1882,6 +2061,9 @@ app.post('/cuadrillaPorReferencia', requirePermission('cfo', 'cuadrilla'), async
         const { referencia } = req.body;
         if (!referencia) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        if (!(await referenciaPermitidaPorAduana(req, referencia))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
@@ -2016,6 +2198,9 @@ app.post('/documentosProvisionalesCuadrilla', requirePermission('cfo', 'cuadrill
         if (!referencia) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
         }
+        if (!(await referenciaPermitidaPorAduana(req, referencia))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const resultado = await pool.request()
@@ -2065,6 +2250,9 @@ app.post('/lineasMaterialCuadrilla', requirePermission('cfo', 'cuadrilla'), asyn
         }
         if (!materialVariableSegmentoId) {
             return res.status(400).json({ Message: "Falta el MaterialVariableSegmentoId (vuelva a buscar la Referencia Operativa)." });
+        }
+        if (!(await referenciaPermitidaPorAduana(req, referencia))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
@@ -2116,6 +2304,12 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
         }
         if (![1, 2, 3].includes(Number(Parametro))) {
             return res.status(400).json({ Message: "Debe seleccionar el tipo de escala (Muestreo, Parcial o Completa)." });
+        }
+
+        // Este endpoint llama a Azure directo (no consulta antes la BD), así que revalida la
+        // Aduana de la Referencia Operativa aquí mismo si el usuario está restringido.
+        if (!(await referenciaPermitidaPorAduana(req, ReferenciaOperativa))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const resp = await fetch("https://cfows.azurewebsites.net/api/SalesOrder/AddLineaMaterialNewApp", {
@@ -4653,15 +4847,24 @@ app.post('/lineasMaterialPorReferencia', requirePermission('cfo', 'eliminarModif
         if (listaReferencias.length === 0) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
         }
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, listaReferencias);
+        const referenciasFiltradas = permitidasAduana === null ? listaReferencias : listaReferencias.filter((r) => permitidasAduana.has(r));
+        // Si el usuario está restringido y NINGUNA de las Referencias pedidas quedó dentro de
+        // sus Aduanas, se avisa eso puntualmente -- sin esto, caía en el mensaje genérico de
+        // "No existe SalesOrder" (con el flag NoExisteSalesOrder que el frontend usa para
+        // mostrar los botones de Matriz de Acción/Habilitar SalesOrder, que no aplica aquí).
+        if (permitidasAduana !== null && referenciasFiltradas.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const requestSo = pool.request();
-        const parametrosSo = listaReferencias.map((valor, i) => {
+        const parametrosSo = referenciasFiltradas.map((valor, i) => {
             const nombre = `ref${i}`;
             requestSo.input(nombre, sql.VarChar, valor);
             return `@${nombre}`;
         });
-        const so = await requestSo.query(`
+        const so = referenciasFiltradas.length === 0 ? { recordset: [] } : await requestSo.query(`
             SELECT [Id], [Status_Value], [ReferenciaOperativa]
             FROM [dbo].[SalesOrder]
             WHERE [ReferenciaOperativa] IN (${parametrosSo.join(", ")}) AND [IsSoftDeleted] = 0
@@ -4740,6 +4943,9 @@ app.post('/materialesDisponiblesPorReferencia', requirePermission('cfo', 'elimin
         const referenciaTrim = (referencia || "").trim();
         if (!referenciaTrim) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
+        }
+        if (!(await referenciaPermitidaPorAduana(req, referenciaTrim))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
@@ -4847,6 +5053,9 @@ app.post('/agregarLineaMaterial', requirePermission('cfo', 'eliminarModificarLin
         if (!CreatedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (CreatedBy) es requerido." });
         }
+        if (!(await referenciaPermitidaPorAduana(req, referenciaTrim))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         // Un mismo Segmento puede llevar materiales Fijos y Variables mezclados en la misma
         // llamada (confirmado en el swagger de cfows: CommandSegmento acepta ambos arreglos).
@@ -4917,6 +5126,9 @@ app.post('/modificarLineaMaterial', requirePermission('cfo', 'eliminarModificarL
         }
         if (!Observacion || !Observacion.trim()) {
             return res.status(400).json({ Message: "Debe indicar la observación (motivo del cambio)." });
+        }
+        if (!(await lineaMaterialPermitidaPorAduana(req, Tipo, Id))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const body = { Id, ModifiedBy, Observacion: Observacion.trim(), IsSoftDeleted: false };
@@ -5022,6 +5234,9 @@ app.post('/eliminarLineaMaterial', requirePermission('cfo', 'eliminarModificarLi
         if (!Observacion || !Observacion.trim()) {
             return res.status(400).json({ Message: "Debe indicar la observación (motivo de la eliminación)." });
         }
+        if (!(await lineaMaterialPermitidaPorAduana(req, Tipo, Id))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         // Solo para la bitácora: la Descripción de la Línea antes de eliminarla.
         const tablaPorTipo = { fijo: "LineaMaterialFlat", variable: "LineaMaterialVariable" };
@@ -5125,10 +5340,30 @@ app.post('/eliminarLineasMaterial', requirePermission('cfo', 'eliminarModificarL
             return `@${nombre}`;
         });
         const estadoActual = await requestEstado.query(`
-            SELECT [Id], [IsSoftDeleted] FROM [dbo].[${tablaPorTipo[Tipo]}] WHERE [Id] IN (${paramsEstado.join(", ")})
+            SELECT LM.[Id], LM.[IsSoftDeleted], SO.[ReferenciaOperativa]
+            FROM [dbo].[${tablaPorTipo[Tipo]}] LM
+            JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = LM.[SalesOrderDetalleId]
+            JOIN [dbo].[SalesOrder] SO ON SO.[Id] = SD.[SalesOrderId]
+            WHERE LM.[Id] IN (${paramsEstado.join(", ")})
         `);
         const yaEliminadoPorId = {};
         for (const fila of estadoActual.recordset) yaEliminadoPorId[String(fila.Id).toUpperCase()] = !!fila.IsSoftDeleted;
+
+        // Si el usuario está restringido, cualquier Id de otra Aduana no debe pasar
+        // silenciosamente como "ya eliminado" -- se rechaza la operación entera para no dejar
+        // pasar un intento de tocar algo fuera de su alcance.
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, estadoActual.recordset.map((f) => f.ReferenciaOperativa));
+        if (permitidasAduana !== null) {
+            const idsPermitidos = new Set(
+                estadoActual.recordset
+                    .filter((f) => permitidasAduana.has(f.ReferenciaOperativa))
+                    .map((f) => String(f.Id).toUpperCase())
+            );
+            const idsFueraDeAlcance = idsLista.filter((id) => !idsPermitidos.has(id.toUpperCase()));
+            if (idsFueraDeAlcance.length > 0) {
+                return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+            }
+        }
 
         const idsYaEliminados = idsLista.filter((id) => yaEliminadoPorId[id.toUpperCase()] === true);
         const idsPorEliminar = idsLista.filter((id) => yaEliminadoPorId[id.toUpperCase()] !== true);
@@ -5241,18 +5476,45 @@ app.post('/docProvisionalBuscarProveedores', requirePermission('cfo', 'crearDocu
         if (!nombreTrim) {
             return res.status(400).json({ Message: "Ingrese un nombre para buscar." });
         }
-        const pool = await conexion(BasesDeDatos.Personas);
-        const resultado = await pool.request()
+        // Antes se filtraba por Persona.Discriminator = 'PersonaJuridicaProveedor', pero eso
+        // depende de un dato de Personas que no siempre está bien etiquetado -- hay Personas
+        // que SÍ tienen un Proveedor real creado en CFO (dbo.Proveedor) aunque en Personas no
+        // traigan ese Discriminator. Por eso ahora se busca por nombre en Personas (sin filtrar
+        // por Discriminator, igual que documentosPostFacturacionBuscarPersonas) y luego se
+        // cruza contra CFO para quedarse solo con los que de verdad son Proveedor ahí -- CFO
+        // manda sobre esa clasificación, no la etiqueta de Personas.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const candidatos = await poolPersonas.request()
             .input('nombre', sql.VarChar, `%${nombreTrim}%`)
             .query(`
-                SELECT TOP 15 Id AS PersonaId, Nombre, IdFiscal
+                SELECT TOP 100 Id AS PersonaId, Nombre, IdFiscal
                 FROM [dbo].[Persona]
-                WHERE Discriminator = 'PersonaJuridicaProveedor'
-                  AND IsSoftDeleted = 0
+                WHERE IsSoftDeleted = 0
                   AND Nombre LIKE @nombre
                 ORDER BY Nombre
             `);
-        return res.json(resultado.recordset);
+        if (candidatos.recordset.length === 0) {
+            return res.json([]);
+        }
+
+        const poolCfo = await conexion(BasesDeDatos.CfoNetCore);
+        const requestCfo = poolCfo.request();
+        const parametros = candidatos.recordset.map((c, i) => {
+            const nombreParam = `p${i}`;
+            requestCfo.input(nombreParam, sql.UniqueIdentifier, c.PersonaId);
+            return `@${nombreParam}`;
+        });
+        const proveedoresCfo = await requestCfo.query(`
+            SELECT DISTINCT PersonaId
+            FROM [dbo].[Proveedor]
+            WHERE IsSoftDeleted = 0 AND PersonaId IN (${parametros.join(", ")})
+        `);
+        const idsConProveedorCfo = new Set(proveedoresCfo.recordset.map((p) => String(p.PersonaId).toUpperCase()));
+
+        const resultado = candidatos.recordset
+            .filter((c) => idsConProveedorCfo.has(String(c.PersonaId).toUpperCase()))
+            .slice(0, 15);
+        return res.json(resultado);
     } catch (error) {
         console.error("Error en docProvisionalBuscarProveedores:", error);
         return res.status(500).json({ Message: "Error al buscar Proveedores", Error: error.message });
@@ -5868,6 +6130,9 @@ app.post('/especieFiscalDatosPorReferencia', requirePermission('cfo', 'crearEspe
         if (!referenciaTrim) {
             return res.status(400).json({ Message: "La Referencia Operativa es requerida." });
         }
+        if (!(await referenciaPermitidaPorAduana(req, referenciaTrim))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
         const resultado = await resolverClienteAduanaPorReferencia(referenciaTrim);
         if (resultado.error) {
             return res.status(404).json(resultado);
@@ -5930,6 +6195,9 @@ app.post('/crearEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), 
         if (!CreatedBy) return res.status(400).json({ Message: "Seleccione a nombre de quién se crea la Especie Fiscal." });
         if (!ESPECIES_FISCALES[especieFiscalIdUpper]) return res.status(400).json({ Message: "Seleccione una Especie Fiscal válida." });
         if (!observacionTrim) return res.status(400).json({ Message: "La Observación es requerida." });
+        if (!(await referenciaPermitidaPorAduana(req, referenciaTrim))) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+        }
 
         // Se vuelve a resolver Cliente/Aduana (no se confía en lo que ya se resolvió en pantalla)
         // por si algo cambió entre que se buscó la Referencia y que se dio "Crear".
@@ -5997,11 +6265,16 @@ const ESTADOS_ESPECIE_FISCAL = { 1: "Creado", 2: "Aprobado", 3: "Denegado", 4: "
 app.post('/especiesFiscalesPorReferencia', requirePermission('cfo', 'crearEspecieFiscal'), async (req, res) => {
     try {
         const { referencias } = req.body;
-        const listaReferencias = Array.isArray(referencias)
+        const listaReferenciasPedidas = Array.isArray(referencias)
             ? referencias.map((r) => String(r).trim()).filter(Boolean)
             : [];
-        if (listaReferencias.length === 0) {
+        if (listaReferenciasPedidas.length === 0) {
             return res.status(400).json({ Message: "Debe indicar al menos una Referencia Operativa." });
+        }
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, listaReferenciasPedidas);
+        const listaReferencias = permitidasAduana === null ? listaReferenciasPedidas : listaReferenciasPedidas.filter((r) => permitidasAduana.has(r));
+        if (permitidasAduana !== null && listaReferencias.length === 0) {
+            return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
         }
 
         const poolCfo = await conexion(BasesDeDatos.CfoNetCore);
@@ -6012,7 +6285,7 @@ app.post('/especiesFiscalesPorReferencia', requirePermission('cfo', 'crearEspeci
             return `@${nombre}`;
         });
 
-        const resultado = await request.query(`
+        const resultado = listaReferencias.length === 0 ? { recordset: [] } : await request.query(`
             SELECT SEF.ReferenciaOperativa, SEF.Observacion, SEF.Status_Value, SEF.CreatedBy,
                    MV.Descripcion, SEF.ClienteId, SEF.Id, SEF.Correlativo
             FROM dbo.SolicitudEspecieFiscal SEF
@@ -6112,6 +6385,31 @@ app.post('/eliminarEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'
         if (ids.length === 0) return res.status(400).json({ Message: "Seleccione al menos una Especie Fiscal para eliminar." });
         if (!observacionTrim) return res.status(400).json({ Message: "Debe indicar el motivo de la eliminación." });
         if (!ModifiedBy) return res.status(400).json({ Message: "El usuario que autoriza es requerido." });
+
+        // Este endpoint llama a Azure directo con solo los Id -- revalida que TODOS pertenezcan
+        // a una Aduana permitida si el usuario está restringido.
+        const poolValidacionEspecie = await conexion(BasesDeDatos.CfoNetCore);
+        const requestValidacionEspecie = poolValidacionEspecie.request();
+        const parametrosIds = ids.map((id, i) => {
+            const nombre = `sef${i}`;
+            requestValidacionEspecie.input(nombre, sql.UniqueIdentifier, id);
+            return `@${nombre}`;
+        });
+        const especiesConReferencia = await requestValidacionEspecie.query(`
+            SELECT SEF.Id, SEF.ReferenciaOperativa FROM dbo.SolicitudEspecieFiscal SEF WHERE SEF.Id IN (${parametrosIds.join(", ")})
+        `);
+        const permitidasAduana = await referenciasPermitidasPorAduana(req, especiesConReferencia.recordset.map((f) => f.ReferenciaOperativa));
+        if (permitidasAduana !== null) {
+            const idsPermitidos = new Set(
+                especiesConReferencia.recordset
+                    .filter((f) => permitidasAduana.has(f.ReferenciaOperativa))
+                    .map((f) => String(f.Id).toUpperCase())
+            );
+            const idsFueraDeAlcance = ids.filter((id) => !idsPermitidos.has(id.toUpperCase()));
+            if (idsFueraDeAlcance.length > 0) {
+                return res.status(403).json({ Message: MENSAJE_FUERA_DE_ADUANA });
+            }
+        }
 
         const resp = await fetch("https://cfows.azurewebsites.net/api/SolicitudEspecieFiscal/ListDeleteEspecieFiscal", {
             method: "POST",

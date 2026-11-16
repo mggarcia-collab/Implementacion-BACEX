@@ -93,11 +93,19 @@ export default function Login() {
             degradado de Vesta se ve detrás sin alterar los colores originales del logo */}
         <div className="login-split-brand" style={{
           flex: "0 0 50%",
-          backgroundImage: "url(/Logo-final.png), linear-gradient(150deg, #1f3651 0%, #2c4a6e 50%, #5b8fb9 100%)",
-          backgroundSize: "95%, cover",
-          backgroundRepeat: "no-repeat, no-repeat",
-          backgroundPosition: "center, center"
-        }} />
+          position: "relative",
+          overflow: "hidden",
+          background: "linear-gradient(150deg, #1f3651 0%, #2c4a6e 50%, #5b8fb9 100%)"
+        }}>
+          <div style={{
+            position: "absolute",
+            inset: 0,
+            backgroundImage: "url(/logo-login.png), radial-gradient(circle at center, rgba(148,163,184,0) 0%, rgba(148,163,184,0) 52%, rgba(148,163,184,0.4) 68%, rgba(148,163,184,0) 88%)",
+            backgroundSize: "65%, 100%",
+            backgroundRepeat: "no-repeat, no-repeat",
+            backgroundPosition: "center, center"
+          }} />
+        </div>
 
         {/* Panel del formulario, con tinte rosado a juego con la marca */}
         <div style={{

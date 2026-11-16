@@ -101,12 +101,16 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
         const infoAnalisis = await pool.request()
             .input('analisisId', sql.UniqueIdentifier, analisisId)
             .query(`
-                SELECT ro.Referencia
+                SELECT ro.Referencia, a.Vigente AS VigenteAnterior
                 FROM Analisis a
                 LEFT JOIN ReferenciaOperativa ro ON ro.Id = a.ReferenciaOperativaId
                 WHERE a.Id = @analisisId
             `);
         const referenciaOperativa = infoAnalisis.recordset[0]?.Referencia;
+        // Convención invertida del dato crudo de Vigente (ver mismo comentario en
+        // SolicitudesAsociadas.jsx): true = No, false = Sí.
+        const vigenteAnteriorCrudo = infoAnalisis.recordset[0]?.VigenteAnterior;
+        const vigenteAnteriorTexto = vigenteAnteriorCrudo === undefined ? "—" : (vigenteAnteriorCrudo ? "No" : "Sí");
 
         const resp = await fetch("https://analisisderedapi.vesta-accelerate.com/api/AnalisisCrud/ActualizarAnalisisAVigente", {
             method: "POST",
@@ -130,6 +134,11 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
             return res.status(400).json({ Message: mensaje || "El servicio rechazó la solicitud." });
         }
 
+        // vigente llega ya en la convención invertida de la BD (true = No, false = Sí,
+        // ver mismo comentario en SolicitudesAsociadas.jsx) -- el texto de "accion" estaba
+        // usando el valor crudo tal cual, sin invertir, y decía lo contrario de lo que en
+        // realidad se guardó.
+        const vigenteNuevoTexto = vigente ? "No" : "Sí";
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -137,8 +146,10 @@ app.post('/actualizarAnalisisVigente', requirePermission('red', 'matriz'), async
             areaLabel: "Análisis de Red",
             moduloKey: "matriz",
             moduloLabel: "Matriz",
-            accion: `Marcó Análisis como ${vigente ? "Vigente" : "No Vigente"}`,
-            referencia: referenciaOperativa || analisisId
+            accion: `Marcó Análisis como ${vigenteNuevoTexto === "Sí" ? "Vigente" : "No Vigente"}`,
+            referencia: referenciaOperativa || analisisId,
+            antes: { Vigente: vigenteAnteriorTexto },
+            despues: { Vigente: vigenteNuevoTexto }
         });
 
         return res.status(200).json({ Message: "Análisis actualizado con éxito", Data: data });
@@ -199,8 +210,10 @@ app.post('/actualizarHaSidoEvaluado', requirePermission('red', 'matriz'), async 
         const pool = await conexion(BasesDeDatos.AnalisisDeRed);
         const infoReferencia = await pool.request()
             .input('referenciaOperativaId', sql.UniqueIdentifier, referenciaOperativaId)
-            .query(`SELECT Referencia FROM ReferenciaOperativa WHERE Id = @referenciaOperativaId`);
+            .query(`SELECT Referencia, HaSidoEvaluado AS HaSidoEvaluadoAnterior FROM ReferenciaOperativa WHERE Id = @referenciaOperativaId`);
         const referenciaTexto = infoReferencia.recordset[0]?.Referencia;
+        const evaluadoAnteriorCrudo = infoReferencia.recordset[0]?.HaSidoEvaluadoAnterior;
+        const evaluadoAnteriorTexto = evaluadoAnteriorCrudo === undefined ? "—" : (evaluadoAnteriorCrudo ? "Evaluada" : "No Evaluada");
 
         const resp = await fetch("https://analisisderedapi.vesta-accelerate.com/api/ReferenciaOperativaCrudApi/ActualizarHaSidoEvaluado", {
             method: "POST",
@@ -232,7 +245,9 @@ app.post('/actualizarHaSidoEvaluado', requirePermission('red', 'matriz'), async 
             moduloKey: "matriz",
             moduloLabel: "Matriz",
             accion: `Marcó Referencia Operativa como ${haSidoEvaluado ? "Evaluada" : "No Evaluada"}`,
-            referencia: referenciaTexto || referenciaOperativaId
+            referencia: referenciaTexto || referenciaOperativaId,
+            antes: { HaSidoEvaluado: evaluadoAnteriorTexto },
+            despues: { HaSidoEvaluado: haSidoEvaluado ? "Evaluada" : "No Evaluada" }
         });
 
         return res.status(200).json({ Message: "Referencia Operativa actualizada con éxito", Data: data });

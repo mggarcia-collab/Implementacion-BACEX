@@ -123,7 +123,9 @@ export default function CambioComponente({ navParams }) {
           OficinaVenta: filaComponenteNuevo.OficinaVenta,
           CentroSuministrador: filaComponenteNuevo.CentroSuministrador,
           ModifiedBy: autorizador,
-          Observacion: motivo
+          Observacion: motivo,
+          ComponenteAnteriorDescripcion: filaActual.Descripcion,
+          ComponenteNuevoDescripcion: filaComponenteNuevo.Descripcion
         })
       });
       const data = await resp.json().catch(() => null);

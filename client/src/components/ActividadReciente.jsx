@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../apiClient.js";
+import { categoriaActividad, COLORES_ACTIVIDAD } from "./bitacoraEstilos.jsx";
 
 const formatoFecha = new Intl.DateTimeFormat("es-HN", {
   day: "2-digit",
@@ -16,7 +17,7 @@ function formatearFecha(sqliteDateUtc) {
   return formatoFecha.format(fecha);
 }
 
-export default function ActividadReciente({ limite = 10 }) {
+export default function ActividadReciente({ limite = 10, onVerTodo }) {
   const [actividades, setActividades] = useState([]);
   const [cargando, setCargando] = useState(true);
 
@@ -40,9 +41,16 @@ export default function ActividadReciente({ limite = 10 }) {
 
   return (
     <div className="actividad-reciente" style={{ position: "relative", zIndex: 1, marginTop: "28px" }}>
-      <h3 className="actividad-titulo">Actividad reciente</h3>
+      <div className="actividad-reciente-header">
+        <h3 className="actividad-titulo">Actividad reciente</h3>
+        {onVerTodo && (
+          <button type="button" className="actividad-ver-todo" onClick={onVerTodo}>
+            Ver toda la bitácora →
+          </button>
+        )}
+      </div>
       <div className="actividad-tabla-wrap">
-        <table className="actividad-tabla">
+        <table className="actividad-reciente-tabla">
           <thead>
             <tr>
               <th>Fecha y hora</th>
@@ -55,14 +63,17 @@ export default function ActividadReciente({ limite = 10 }) {
             {cargando ? (
               <tr><td colSpan={4} className="actividad-vacio">Cargando…</td></tr>
             ) : (
-              actividades.map((a) => (
-                <tr key={a.id}>
-                  <td>{formatearFecha(a.fecha)}</td>
-                  <td>{a.moduloLabel || a.areaLabel}</td>
-                  <td>{a.accion}</td>
-                  <td>{a.usuarioNombre}</td>
-                </tr>
-              ))
+              actividades.map((a) => {
+                const colores = COLORES_ACTIVIDAD[categoriaActividad(a.accion)];
+                return (
+                  <tr key={a.id}>
+                    <td>{formatearFecha(a.fecha)}</td>
+                    <td className="col-modulo">{a.moduloLabel || a.areaLabel}</td>
+                    <td style={{ color: colores.color, fontWeight: 600 }}>{a.accion}</td>
+                    <td>{a.usuarioNombre}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

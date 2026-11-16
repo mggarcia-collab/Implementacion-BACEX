@@ -2,15 +2,33 @@ import sql from 'mssql'
 
 const pools = {}; // diccionario de pools por DB
 
+// RegistroActividades vive en un servidor Azure SQL aparte, con su propio login,
+// distinto al servidor compartido donde están CfoNetCore/AnalisisDeRed/etc. Esta
+// función se evalúa recién cuando se llama (no al cargar el módulo), para leer
+// las variables de entorno ya cargadas por dotenv.config() en index.js -- si fuera
+// un objeto literal a nivel de módulo, se evaluaría antes de que dotenv corra y
+// las variables quedarían undefined para siempre.
+function credencialesPara(databaseName) {
+    if (databaseName === 'RegistroActividades') {
+        return {
+            user: process.env.BITACORA_DB_USER,
+            password: process.env.BITACORA_DB_PASSWORD,
+            server: process.env.BITACORA_DB_SERVER
+        };
+    }
+    return null;
+}
+
 export async function conexion(databaseName) {
     if (pools[databaseName]) {
         return pools[databaseName];
     }
+    const credenciales = credencialesPara(databaseName);
     const config = {
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
+        user: credenciales?.user || process.env.DB_USER,
+        password: credenciales?.password || process.env.DB_PASSWORD,
         database: databaseName,
-        server: process.env.DB_SERVER,
+        server: credenciales?.server || process.env.DB_SERVER,
         options: {
             encrypt: true,
             trustServerCertificate: true
@@ -41,5 +59,7 @@ export let BasesDeDatos = {
     AnalisisDeRed: 'AnalisisDeRed',
     Personas: 'Personas',
     HojaDeRuta: 'HojaDeRuta',
-    Seguimiento: 'Seguimiento'
+    Seguimiento: 'Seguimiento',
+    AccionesPersonal: 'AccionesPersonal',
+    RegistroActividades: 'RegistroActividades'
 }

@@ -674,11 +674,71 @@ body {
 
 /* ACTIVIDAD RECIENTE */
 
+.actividad-reciente-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
 .actividad-titulo {
   font-size: 15px;
   font-weight: 700;
   color: var(--text-strong, #1f2a37);
-  margin: 0 0 12px;
+  margin: 0;
+}
+
+.actividad-ver-todo {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vesta-rose);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 0;
+  transition: var(--transition);
+}
+
+.actividad-ver-todo:hover {
+  color: var(--vesta-maroon);
+  transform: translateX(2px);
+}
+
+.actividad-reciente-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.actividad-reciente-tabla thead th {
+  text-align: left;
+  padding: 10px 14px;
+  background: #f7f8fa;
+  color: #6b7280;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-color, #e6e8eb);
+  white-space: nowrap;
+}
+
+.actividad-reciente-tabla tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f0f1f3;
+  color: #333;
+  white-space: nowrap;
+}
+
+.actividad-reciente-tabla tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.actividad-reciente-tabla tbody tr:hover td {
+  background: #fafbfc;
+}
+
+.actividad-reciente-tabla td.col-modulo {
+  color: var(--vesta-rose);
+  font-weight: 600;
 }
 
 .actividad-tabla-wrap {
@@ -716,17 +776,240 @@ body {
   border-bottom: none;
 }
 
-.actividad-tabla th:nth-child(3),
-.actividad-tabla tbody td:nth-child(3) {
+/* Orden de columnas: Fecha y hora, Usuario, Área, Módulo, Actividad, Referencia,
+   Antes, Después, Motivo. */
+.actividad-tabla th:nth-child(4),
+.actividad-tabla tbody td:nth-child(4) {
   white-space: normal;
-  width: 32%;
-  min-width: 240px;
+  width: 13%;
+  min-width: 130px;
+}
+
+.actividad-tabla th:nth-child(5),
+.actividad-tabla tbody td:nth-child(5) {
+  white-space: normal;
+  width: 20%;
+  min-width: 190px;
+}
+
+.actividad-tabla th:nth-child(7),
+.actividad-tabla tbody td:nth-child(7),
+.actividad-tabla th:nth-child(8),
+.actividad-tabla tbody td:nth-child(8) {
+  white-space: normal;
+  width: 17%;
+  min-width: 160px;
+  vertical-align: top;
+}
+
+.actividad-tabla tbody td:nth-child(3),
+.actividad-tabla tbody td:nth-child(5) {
+  vertical-align: top;
 }
 
 .actividad-vacio {
   text-align: center;
   color: #9aa1ab;
   padding: 18px !important;
+}
+
+/* BITÁCORA */
+
+.bitacora-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.bitacora-header-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--vesta-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-md);
+}
+
+.bitacora-header-text {
+  flex: 1;
+}
+
+.bitacora-header-text h2 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.bitacora-header-text p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.bitacora-estado-pill {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success);
+  background: #e7f6ec;
+  padding: 5px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.bitacora-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--vesta-tint-border);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  background: var(--vesta-tint);
+}
+
+.stat-card-icon.verde { background: #e7f6ec; }
+.stat-card-icon.morado { background: #efe9fb; }
+.stat-card-icon.ambar { background: #fdf3e3; }
+
+.stat-card-valor {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.2;
+}
+
+.stat-card-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.bitacora-card {
+  background: var(--surface);
+  border: 1px solid var(--vesta-tint-border);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 18px;
+}
+
+.bitacora-card-titulo {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 14px;
+}
+
+.bitacora-filtros-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.bitacora-tabla-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.bitacora-tabla-acciones {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bitacora-resultados-pill {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vesta-maroon);
+  background: var(--vesta-tint);
+  padding: 5px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.bitacora-paginacion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.bitacora-paginacion-info {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bitacora-paginacion-nums {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagina-flecha {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.pagina-num {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--vesta-tint-border);
+  background: var(--surface);
+  color: var(--text-main);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.pagina-num:hover {
+  background: var(--vesta-tint);
+}
+
+.pagina-num.active {
+  background: var(--vesta-gradient);
+  border-color: transparent;
+  color: white;
+  font-weight: 600;
+}
+
+.pagina-num-puntos {
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0 2px;
 }
 
 /* FORMULARIOS */

@@ -666,7 +666,9 @@ app.post('/materialesNegEliminarVariables', requirePermission('cfo', 'materiales
             moduloKey: "materialesNegociacion",
             moduloLabel: "Materiales en Negociación",
             accion: `Eliminó ${ids.length} Material${ids.length !== 1 ? "es" : ""} Variable${ids.length !== 1 ? "s" : ""} (y ${escalaIds.length} Escala${escalaIds.length !== 1 ? "s" : ""} asociada${escalaIds.length !== 1 ? "s" : ""}): ${ids.join(", ")}`,
-            referencia: ids[0]
+            referencia: ids[0],
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: `✓ ${ids.length} Material${ids.length !== 1 ? "es" : ""} eliminado${ids.length !== 1 ? "s" : ""} con éxito`, EscalasEliminadas: escalaIds.length });
@@ -701,7 +703,9 @@ app.post('/materialesNegEliminarFijos', requirePermission('cfo', 'materialesNego
             moduloKey: "materialesNegociacion",
             moduloLabel: "Materiales en Negociación",
             accion: `Eliminó ${ids.length} Material${ids.length !== 1 ? "es" : ""} Fijo${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}`,
-            referencia: ids[0]
+            referencia: ids[0],
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: `✓ ${ids.length} Material${ids.length !== 1 ? "es" : ""} eliminado${ids.length !== 1 ? "s" : ""} con éxito` });

@@ -10,6 +10,7 @@ import ActividadReciente from "./components/ActividadReciente.jsx";
 import AlertasCampana from "./components/AlertasCampana.jsx";
 
 const ADMIN_KEY = "__admin__";
+const BITACORA_KEY = "__bitacora__";
 
 function saludoSegunHora() {
   const hora = new Date().getHours();
@@ -20,12 +21,21 @@ function saludoSegunHora() {
 
 const fechaFormatter = new Intl.DateTimeFormat("es-HN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
-// Administración no depende de permisos por módulo (es todo o nada según isAdmin),
-// así que se arma aparte en vez de pasar por el filtro de permisos de "areas".
+// Administración y Bitácora no dependen de permisos por módulo (son todo o nada
+// según isAdmin), así que se arman aparte en vez de pasar por el filtro de
+// permisos de "areas". Bitácora es su propia área (no un submódulo de
+// Administración) porque es de un solo módulo: un clic la abre directo.
 const adminArea = {
   label: "Administración",
   modules: {
     usuarios: { ...adminUsuariosMeta, Component: AdminUsuarios },
+  },
+};
+
+const bitacoraArea = {
+  label: "Bitácora",
+  icon: adminBitacoraMeta.icon,
+  modules: {
     bitacora: { ...adminBitacoraMeta, Component: AdminBitacora },
   },
 };
@@ -109,7 +119,12 @@ function AppShell() {
   };
 
   const isAdminScreen = activeArea === ADMIN_KEY;
-  const currentAreaObj = isAdminScreen ? adminArea : (activeArea ? visibleAreas[activeArea] : null);
+  const isBitacoraScreen = activeArea === BITACORA_KEY;
+  const currentAreaObj = isAdminScreen
+    ? adminArea
+    : isBitacoraScreen
+      ? bitacoraArea
+      : (activeArea ? visibleAreas[activeArea] : null);
   const currentModules = currentAreaObj?.modules || {};
   const mod = currentAreaObj && activeModule ? currentModules[activeModule] : null;
   const ActiveComponent = mod?.Component;
@@ -212,6 +227,9 @@ function AppShell() {
             {usuario.isAdmin && (
               <div className="mod-icon amber" style={{ cursor: "pointer" }} title="Administración" onClick={() => handleRailClick(ADMIN_KEY)}>👤</div>
             )}
+            {usuario.isAdmin && (
+              <div className="mod-icon" style={{ cursor: "pointer" }} title="Bitácora" onClick={() => handleSelectModule(BITACORA_KEY, "bitacora")}>{bitacoraArea.icon}</div>
+            )}
           </div>
         )}
         <aside className="sidebar" style={sidebarOpen ? undefined : { display: "none" }}>
@@ -265,6 +283,16 @@ function AppShell() {
               {expandedAreas.has(ADMIN_KEY) && renderSubmodulos(ADMIN_KEY, adminArea)}
             </div>
           )}
+
+          {usuario.isAdmin && (
+            <div
+              className={`mod-item${isBitacoraScreen ? " active" : ""}`}
+              onClick={() => handleSelectModule(BITACORA_KEY, "bitacora")}
+            >
+              <div className="mod-icon">{bitacoraArea.icon}</div>
+              <div className="mod-name"><strong>Bitácora</strong><span>{bitacoraArea.modules.bitacora.desc}</span></div>
+            </div>
+          )}
         </aside>
 
         <main className="content" style={{ position: "relative" }}>
@@ -290,7 +318,10 @@ function AppShell() {
               </div>
 
               {(() => {
-                const todasAreas = [...Object.entries(visibleAreas), ...(usuario.isAdmin ? [[ADMIN_KEY, adminArea]] : [])];
+                const todasAreas = [
+                  ...Object.entries(visibleAreas),
+                  ...(usuario.isAdmin ? [[ADMIN_KEY, adminArea], [BITACORA_KEY, bitacoraArea]] : []),
+                ];
                 const areaAbierta = todasAreas.find(([areaKey]) => areaKey === homeAreaKey);
 
                 if (areaAbierta) {
@@ -374,7 +405,14 @@ function AppShell() {
                 return (
                   <div className="home-grid" style={{ position: "relative", zIndex: 1 }}>
                     {todasAreas.map(([areaKey, area]) => (
-                      <div key={areaKey} className="home-card" onClick={() => { setHomeAreaKey(areaKey); setHomeGroupLabel(null); }}>
+                      <div
+                        key={areaKey}
+                        className="home-card"
+                        onClick={() => areaKey === BITACORA_KEY
+                          ? handleSelectModule(BITACORA_KEY, "bitacora")
+                          : (() => { setHomeAreaKey(areaKey); setHomeGroupLabel(null); })()
+                        }
+                      >
                         <div className="card-icon">{area.icon || "👤"}</div>
                         <h4>{area.label}</h4>
                         <p>{Object.keys(area.modules).length} módulo{Object.keys(area.modules).length !== 1 ? "s" : ""}</p>
@@ -385,13 +423,18 @@ function AppShell() {
                 );
               })()}
 
-              <ActividadReciente limite={10} />
+              <ActividadReciente
+                limite={10}
+                onVerTodo={usuario.isAdmin ? () => handleSelectModule(BITACORA_KEY, "bitacora") : undefined}
+              />
             </div>
           ) : (
             <>
               <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "10px" }}>
                 <button className="back-btn" onClick={handleExitModule} title="Salir" style={{ fontSize: "18px", lineHeight: 1 }}>←</button>
-                <div className="breadcrumb">{currentAreaObj.label} › <span>{mod.label}</span></div>
+                <div className="breadcrumb">
+                  {currentAreaObj.label === mod.label ? <span>{mod.label}</span> : <>{currentAreaObj.label} › <span>{mod.label}</span></>}
+                </div>
               </div>
 
               <div className="panel" style={{ position: "relative" }}>

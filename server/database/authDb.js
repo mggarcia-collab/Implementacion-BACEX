@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import sql from "mssql";
+import { conexion, BasesDeDatos } from "./database.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -108,6 +110,21 @@ try {
 } catch {
   // La columna ya existe, no hay nada que hacer.
 }
+// datos_antes / datos_despues guardan, en JSON, el valor del dato puntual antes y
+// después de la acción (ej. { "Componente": "A" } -> { "Componente": "B" }), para que
+// la bitácora muestre exactamente qué cambió y no solo que "se cambió algo". Quedan en
+// null en acciones donde no aplica (ej. una simple consulta) o solo uno de los dos en
+// creaciones (sin "antes") y eliminaciones (sin "después").
+try {
+  authDb.exec(`ALTER TABLE actividad ADD COLUMN datos_antes TEXT`);
+} catch {
+  // La columna ya existe, no hay nada que hacer.
+}
+try {
+  authDb.exec(`ALTER TABLE actividad ADD COLUMN datos_despues TEXT`);
+} catch {
+  // La columna ya existe, no hay nada que hacer.
+}
 
 export function getPermisosDeUsuario(usuarioId) {
   return authDb
@@ -115,16 +132,61 @@ export function getPermisosDeUsuario(usuarioId) {
     .all(usuarioId);
 }
 
+// Acepta tanto un objeto (lo serializa a JSON) como un string ya armado (lo deja tal
+// cual), para que cada caller pueda pasar el dato puntual de la forma que le quede
+// más natural (ej. { Componente: "A" } o ya un texto corto como "Vigente: Sí").
+function serializarDatos(valor) {
+  if (valor === undefined || valor === null) return null;
+  return typeof valor === "string" ? valor : JSON.stringify(valor);
+}
+
+function registrarActividadLocal({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia, motivo, antes, despues }) {
+  authDb
+    .prepare(`INSERT INTO actividad (usuario_id, usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion, referencia, motivo, datos_antes, datos_despues) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(usuarioId || null, usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion, referencia || null, motivo || null, serializarDatos(antes), serializarDatos(despues));
+}
+
 // Registro de actividad para el widget "Actividad reciente" de Inicio y la bitácora
 // completa de Administración. Se llama desde las rutas después de que una acción se
 // aplicó con éxito de verdad (no antes de validar).
-export function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia, motivo }) {
+//
+// Vive en RegistroActividades.dbo.Bitacora (SQL Server dedicado, creado para esto), no
+// en el SQLite local: así la bitácora ya no se pierde si el contenedor se reinicia sin
+// disco persistente. Cualquier fallo al escribir ahí (ej. tabla aún no creada) cae de
+// vuelta al SQLite local, para que la bitácora no se quede sin registrar nada. Ningún
+// caller hace `await` de esta función (son ~47 sitios): queda async a propósito para no
+// bloquear la respuesta HTTP por el registro del log, y cualquier error se atrapa aquí
+// adentro para que nunca se vuelva un unhandled rejection.
+export async function registrarActividad({ usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia, motivo, antes, despues }) {
+  const datos = { usuarioId, usuarioNombre, areaKey, areaLabel, moduloKey, moduloLabel, accion, referencia, motivo, antes, despues };
   try {
-    authDb
-      .prepare(`INSERT INTO actividad (usuario_id, usuario_nombre, area_key, area_label, modulo_key, modulo_label, accion, referencia, motivo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(usuarioId || null, usuarioNombre || "—", areaKey, areaLabel, moduloKey || null, moduloLabel || null, accion, referencia || null, motivo || null);
+    const pool = await conexion(BasesDeDatos.RegistroActividades);
+    await pool
+      .request()
+      .input("usuarioId", sql.Int, usuarioId || null)
+      .input("usuarioNombre", sql.VarChar(150), usuarioNombre || "—")
+      .input("areaKey", sql.VarChar(50), areaKey)
+      .input("areaLabel", sql.VarChar(100), areaLabel)
+      .input("moduloKey", sql.VarChar(50), moduloKey || null)
+      .input("moduloLabel", sql.VarChar(100), moduloLabel || null)
+      .input("accion", sql.VarChar(200), accion)
+      .input("referencia", sql.VarChar(300), referencia || null)
+      .input("motivo", sql.VarChar(800), motivo || null)
+      .input("datosAntes", sql.NVarChar(sql.MAX), serializarDatos(antes))
+      .input("datosDespues", sql.NVarChar(sql.MAX), serializarDatos(despues))
+      .query(`
+        INSERT INTO dbo.Bitacora
+          (UsuarioId, UsuarioNombre, AreaKey, AreaLabel, ModuloKey, ModuloLabel, Accion, Referencia, Motivo, DatosAntes, DatosDespues)
+        VALUES
+          (@usuarioId, @usuarioNombre, @areaKey, @areaLabel, @moduloKey, @moduloLabel, @accion, @referencia, @motivo, @datosAntes, @datosDespues)
+      `);
   } catch (error) {
-    console.error("Error al registrar actividad:", error);
+    console.error("No se pudo registrar actividad en SQL Server, se guarda en local:", error.message);
+    try {
+      registrarActividadLocal(datos);
+    } catch (errorLocal) {
+      console.error("Error al registrar actividad en local:", errorLocal);
+    }
   }
 }
 

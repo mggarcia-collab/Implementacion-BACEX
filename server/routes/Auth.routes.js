@@ -163,13 +163,22 @@ router.post("/usuarios", requireAuth, requireAdmin, async (req, res) => {
 
 router.put("/usuarios/:id/permisos", requireAuth, requireAdmin, (req, res) => {
     const usuarioId = Number(req.params.id);
-    const { permisos } = req.body;
+    const { permisos, antesPermisos, despuesPermisos } = req.body;
+
+    // Solo para la bitácora: texto legible si el frontend lo mandó; si no, se cae a
+    // area_key/modulo_key crudo como respaldo.
+    const permisosAntes = typeof antesPermisos === "string" && antesPermisos
+        ? antesPermisos
+        : getPermisosDeUsuario(usuarioId).map((p) => `${p.area}/${p.modulo}`).join(", ") || "—";
 
     authDb.prepare(`DELETE FROM permisos WHERE usuario_id = ?`).run(usuarioId);
     const insertPermiso = authDb.prepare(`INSERT OR IGNORE INTO permisos (usuario_id, area_key, modulo_key) VALUES (?, ?, ?)`);
     for (const p of (permisos || [])) {
         insertPermiso.run(usuarioId, p.area, p.modulo);
     }
+    const permisosDespues = typeof despuesPermisos === "string" && despuesPermisos
+        ? despuesPermisos
+        : (permisos || []).map((p) => `${p.area}/${p.modulo}`).join(", ") || "—";
 
     const usuario = authDb.prepare(`SELECT nombre_completo FROM usuarios WHERE id = ?`).get(usuarioId);
     registrarActividad({
@@ -180,7 +189,9 @@ router.put("/usuarios/:id/permisos", requireAuth, requireAdmin, (req, res) => {
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
         accion: "Actualizó permisos",
-        referencia: usuario?.nombre_completo || ""
+        referencia: usuario?.nombre_completo || "",
+        antes: permisosAntes,
+        despues: permisosDespues
     });
 
     return res.json({ Message: "Permisos actualizados con éxito" });
@@ -227,7 +238,7 @@ router.put("/usuarios/:id/perfil", requireAuth, requireAdmin, (req, res) => {
     if (!nombreCompleto?.trim()) {
         return res.status(400).json({ Message: "El nombre completo es requerido." });
     }
-    const usuario = authDb.prepare(`SELECT id, persona_id FROM usuarios WHERE id = ?`).get(usuarioId);
+    const usuario = authDb.prepare(`SELECT id, nombre_completo, correo, persona_id FROM usuarios WHERE id = ?`).get(usuarioId);
     if (!usuario) {
         return res.status(404).json({ Message: "No se encontró el usuario." });
     }
@@ -238,6 +249,20 @@ router.put("/usuarios/:id/perfil", requireAuth, requireAdmin, (req, res) => {
         .prepare(`UPDATE usuarios SET nombre_completo = ?, correo = ?, persona_id = ? WHERE id = ?`)
         .run(nombreCompleto.trim(), correo?.trim() || null, nuevoPersonaId, usuarioId);
 
+    // El formulario manda Nombre y Correo juntos siempre (vienen precargados), así
+    // que solo se incluye en la bitácora el que realmente cambió de valor.
+    const correoNuevo = correo?.trim() || "—";
+    const antesPerfil = {};
+    const despuesPerfil = {};
+    if (usuario.nombre_completo !== nombreCompleto.trim()) {
+        antesPerfil.Nombre = usuario.nombre_completo;
+        despuesPerfil.Nombre = nombreCompleto.trim();
+    }
+    if ((usuario.correo || "—") !== correoNuevo) {
+        antesPerfil.Correo = usuario.correo || "—";
+        despuesPerfil.Correo = correoNuevo;
+    }
+
     registrarActividad({
         usuarioId: req.user.id,
         usuarioNombre: req.user.nombreCompleto,
@@ -246,7 +271,9 @@ router.put("/usuarios/:id/perfil", requireAuth, requireAdmin, (req, res) => {
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
         accion: "Actualizó perfil",
-        referencia: nombreCompleto.trim()
+        referencia: nombreCompleto.trim(),
+        antes: antesPerfil,
+        despues: despuesPerfil
     });
 
     return res.json({ Message: "Perfil actualizado con éxito" });
@@ -255,9 +282,10 @@ router.put("/usuarios/:id/perfil", requireAuth, requireAdmin, (req, res) => {
 router.put("/usuarios/:id/activo", requireAuth, requireAdmin, (req, res) => {
     const usuarioId = Number(req.params.id);
     const { activo } = req.body;
+
+    const usuario = authDb.prepare(`SELECT nombre_completo, activo AS activo_anterior FROM usuarios WHERE id = ?`).get(usuarioId);
     authDb.prepare(`UPDATE usuarios SET activo = ? WHERE id = ?`).run(activo ? 1 : 0, usuarioId);
 
-    const usuario = authDb.prepare(`SELECT nombre_completo FROM usuarios WHERE id = ?`).get(usuarioId);
     registrarActividad({
         usuarioId: req.user.id,
         usuarioNombre: req.user.nombreCompleto,
@@ -266,7 +294,9 @@ router.put("/usuarios/:id/activo", requireAuth, requireAdmin, (req, res) => {
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
         accion: activo ? "Activó usuario" : "Desactivó usuario",
-        referencia: usuario?.nombre_completo || ""
+        referencia: usuario?.nombre_completo || "",
+        antes: { Estado: usuario?.activo_anterior ? "Activo" : "Inactivo" },
+        despues: { Estado: activo ? "Activo" : "Inactivo" }
     });
 
     return res.json({ Message: activo ? "Usuario activado" : "Usuario desactivado" });
@@ -301,7 +331,9 @@ router.put("/usuarios/:id/admin", requireAuth, requireAdmin, (req, res) => {
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
         accion: isAdmin ? "Otorgó rol de administrador" : "Quitó rol de administrador",
-        referencia: usuario.nombre_completo
+        referencia: usuario.nombre_completo,
+        antes: { Rol: usuario.is_admin ? "Administrador" : "Usuario" },
+        despues: { Rol: isAdmin ? "Administrador" : "Usuario" }
     });
 
     return res.json({ Message: isAdmin ? "Ahora es administrador" : "Ya no es administrador" });

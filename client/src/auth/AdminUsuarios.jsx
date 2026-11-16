@@ -8,6 +8,15 @@ function permisoKey(area, modulo) {
   return `${area}:${modulo}`;
 }
 
+// Para la bitácora: nombres legibles de los módulos de cada permiso, uno por línea.
+// El área no se incluye aquí -- la columna "Área" de la bitácora ya muestra
+// "Administración" para esta actividad, igual que para cualquier otra.
+function formatearPermisosParaBitacora(permisosList) {
+  if (!permisosList || permisosList.length === 0) return "—";
+  const modulos = permisosList.map((p) => areas[p.area]?.modules?.[p.modulo]?.label || p.modulo);
+  return modulos.join("\n");
+}
+
 // Botón de acción de solo ícono: el nombre de la acción se ve al pasar el mouse
 // (title nativo del navegador) en vez de texto siempre visible junto al ícono.
 function IconButton({ title, onClick, bg, fg, children }) {
@@ -339,10 +348,15 @@ export default function AdminUsuarios() {
         const [area, modulo] = key.split(":");
         return { area, modulo };
       });
+      // Solo para la bitácora: nombres legibles del antes (lo que tenía al abrir la
+      // edición) y el después (lo que queda marcado ahora).
+      const usuarioActual = usuarios.find((u) => u.id === usuarioId);
+      const antesPermisos = formatearPermisosParaBitacora(usuarioActual?.permisos);
+      const despuesPermisos = formatearPermisosParaBitacora(permisosArray);
       const response = await apiFetch(`/auth/usuarios/${usuarioId}/permisos`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ permisos: permisosArray })
+        body: JSON.stringify({ permisos: permisosArray, antesPermisos, despuesPermisos })
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {

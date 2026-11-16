@@ -295,12 +295,17 @@ app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indica
             return `@${nombre}`;
         });
         const validacion = await request.query(`
-            SELECT [ReferenciaOperativa]
+            SELECT [ReferenciaOperativa], [IndicadorImpuestoCabecera]
             FROM [dbo].[SalesOrder]
             WHERE [ReferenciaOperativa] IN (${parametros.join(", ")}) AND [IsSoftDeleted] = 0
         `);
         const encontradas = validacion.recordset.map((r) => r.ReferenciaOperativa);
         const noEncontradas = referencias.filter((r) => !encontradas.includes(r));
+        // Solo para la bitácora: valores antes de aplicar el nuevo Indicador (puede venir
+        // distinto en cada Sales Order, por eso se listan todos en vez de uno solo).
+        const indicadorAnteriorTexto = validacion.recordset
+            .map((r) => (r.IndicadorImpuestoCabecera === 1 ? "Aplica" : "No aplica"))
+            .join(", ");
 
         if (encontradas.length === 0) {
             return res.status(404).json({ Message: "No se encontró ninguna de las Sales Order indicadas.", NoEncontradas: noEncontradas });
@@ -333,7 +338,9 @@ app.post('/aplicarIndicadorImpuestoSalesOrder', requirePermission('cfo', 'indica
             moduloKey: "indicadorImpuesto",
             moduloLabel: "Indicador de Impuesto",
             accion: `Aplicó Indicador de Impuesto "${Indicador === 1 ? "Aplica" : "No aplica"}" a ${encontradas.length} Sales Order`,
-            referencia: encontradas.join(", ")
+            referencia: encontradas.join(", "),
+            antes: { Indicador: indicadorAnteriorTexto || "—" },
+            despues: { Indicador: Indicador === 1 ? "Aplica" : "No aplica" }
         });
 
         return res.status(200).json({
@@ -544,7 +551,9 @@ app.post('/habilitarDocumento', requirePermission('cfo', 'habDoc'), async (req, 
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
             accion: "Habilitó documento",
-            referencia: referenciaOperativa || DocumentoId
+            referencia: referenciaOperativa || DocumentoId,
+            antes: { Estado: "Inhabilitado" },
+            despues: { Estado: "Habilitado" }
         });
 
         return res.status(200).json({ Message: "Documento habilitado con éxito", Data: data });
@@ -624,7 +633,9 @@ app.post('/deshabilitarDocumento', requirePermission('cfo', 'habDoc'), async (re
             moduloKey: "habDoc",
             moduloLabel: "Habilitar Documento",
             accion: "Deshabilitó documento",
-            referencia: referenciaOperativa || DocumentoId
+            referencia: referenciaOperativa || DocumentoId,
+            antes: { Estado: "Habilitado" },
+            despues: { Estado: "Inhabilitado" }
         });
 
         return res.status(200).json({ Message: "Documento deshabilitado con éxito", Data: data });
@@ -832,7 +843,9 @@ app.post('/eliminarDocumento', requirePermission('cfo', 'elimDoc'), async (req, 
             moduloLabel: "Eliminar Documento",
             accion: "Eliminó documento",
             referencia: referenciaOperativa || DocumentoId,
-            motivo: Observacion
+            motivo: Observacion,
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
@@ -948,7 +961,9 @@ app.post('/eliminarContrarecibo', requirePermission('cfo', 'contrarecibo'), asyn
             moduloLabel: "Eliminar ContraRecibo",
             accion: "Eliminó contrarecibo",
             referencia: codigoInterno || Id,
-            motivo: Observacion
+            motivo: Observacion,
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Contrarecibo eliminado con éxito", Data: data });
@@ -1095,6 +1110,20 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
             return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
+        // Solo para la bitácora: vuelve a consultar los montos ya redondeados, para poder
+        // mostrar el antes/después real de cada documento (el monto redondeado en sí lo
+        // calcula el servicio externo, no se conoce de antemano acá).
+        const montosAntes = Object.fromEntries(validacion.recordset.map((doc) => [doc.Id, doc.TotalMonto]));
+        let montosDespues = {};
+        try {
+            const consultaDespues = await request.query(`
+                SELECT Id, TotalMonto FROM Documento WHERE Id IN (${parametros.join(", ")})
+            `);
+            montosDespues = Object.fromEntries(consultaDespues.recordset.map((doc) => [doc.Id, doc.TotalMonto]));
+        } catch {
+            // Si falla, la bitácora solo queda sin el monto "después"; no se interrumpe la respuesta.
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -1103,7 +1132,9 @@ app.post('/redondearDocumentos', requirePermission('cfo', 'redondeo'), async (re
             moduloKey: "redondeo",
             moduloLabel: "Redondeo de Documentos",
             accion: `Redondeó ${Ids.length} documento(s)`,
-            referencia: referenciasOperativas.join(", ") || Ids.join(", ")
+            referencia: referenciasOperativas.join(", ") || Ids.join(", "),
+            antes: { Monto: Ids.map((id) => montosAntes[id]).join(", ") },
+            despues: { Monto: Ids.map((id) => montosDespues[id] ?? "—").join(", ") }
         });
 
         return res.status(200).json({ Message: "Documentos redondeados con éxito", Data: data });
@@ -1271,7 +1302,7 @@ app.post('/componenteExternoPorAduana', requirePermission('cfo', 'cambio'), asyn
 
 app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req, res) => {
     try {
-        const { SalesOrderDetalleId, ComponenteId, OficinaVenta, CentroSuministrador, ModifiedBy, Observacion } = req.body;
+        const { SalesOrderDetalleId, ComponenteId, OficinaVenta, CentroSuministrador, ModifiedBy, Observacion, ComponenteAnteriorDescripcion, ComponenteNuevoDescripcion } = req.body;
 
         if (!SalesOrderDetalleId) {
             return res.status(400).json({ Message: "El detalle del Sales Order (SalesOrderDetalleId) es requerido." });
@@ -1335,7 +1366,9 @@ app.post('/actualizarComponente', requirePermission('cfo', 'cambio'), async (req
             moduloLabel: "Cambio de Componente",
             accion: "Actualizó componente",
             referencia: referenciaOperativa || SalesOrderDetalleId,
-            motivo: Observacion
+            motivo: Observacion,
+            antes: { Componente: ComponenteAnteriorDescripcion || "—" },
+            despues: { Componente: ComponenteNuevoDescripcion || ComponenteId }
         });
 
         return res.status(200).json({ Message: "Componente actualizado con éxito", Data: data });
@@ -1810,7 +1843,9 @@ app.post('/anularFacturas', requirePermission('cfo', 'anulacionFacturas'), async
             moduloLabel: "Anulación de Facturas",
             accion: `Anuló ${facturas.length} factura(s)`,
             referencia: facturas.join(", "),
-            motivo: Observacion
+            motivo: Observacion,
+            antes: { Estado: "Facturada" },
+            despues: { Estado: "Anulada (habilitada para refacturación)" }
         });
 
         let validacion = [];
@@ -2673,6 +2708,12 @@ app.post('/modificarCodigoErpProveedor', requirePermission('cfo', 'crearProveedo
             return res.status(400).json({ Message: "Este Código ERP ya pertenece a otro proveedor." });
         }
 
+        // Solo para la bitácora: el Código actual antes de modificarlo.
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Codigo] FROM [dbo].[CodigoErp] WHERE [Id] = @id`);
+        const codigoAnterior = actual.recordset[0]?.Codigo;
+
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/ModificarCodigo", {
             method: "POST",
             headers: {
@@ -2702,7 +2743,9 @@ app.post('/modificarCodigoErpProveedor', requirePermission('cfo', 'crearProveedo
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Modificó el Código ERP a "${codigoTrim}"`,
-            referencia: codigoTrim
+            referencia: codigoTrim,
+            antes: { Codigo: codigoAnterior || "—" },
+            despues: { Codigo: codigoTrim }
         });
 
         return res.status(200).json({ Message: "Código ERP modificado con éxito", Data: data });
@@ -2723,6 +2766,13 @@ app.post('/eliminarCodigoErpProveedor', requirePermission('cfo', 'crearProveedor
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
+
+        // Solo para la bitácora: el Código antes de eliminarlo.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Codigo] FROM [dbo].[CodigoErp] WHERE [Id] = @id`);
+        const codigoAnterior = actual.recordset[0]?.Codigo;
 
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/Delete", {
             method: "POST",
@@ -2753,7 +2803,9 @@ app.post('/eliminarCodigoErpProveedor', requirePermission('cfo', 'crearProveedor
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: "Eliminó un Código ERP",
-            referencia: Id
+            referencia: codigoAnterior || Id,
+            antes: { Codigo: codigoAnterior || "—" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Código ERP eliminado con éxito", Data: data });
@@ -2942,6 +2994,12 @@ app.post('/modificarCodigoErpCliente', requirePermission('cfo', 'crearProveedorC
             return res.status(400).json({ Message: "Este Código ERP ya pertenece a otro cliente o proveedor." });
         }
 
+        // Solo para la bitácora: el Código actual antes de modificarlo.
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Codigo] FROM [dbo].[CodigoErp] WHERE [Id] = @id`);
+        const codigoAnterior = actual.recordset[0]?.Codigo;
+
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/ModificarCodigo", {
             method: "POST",
             headers: {
@@ -2971,7 +3029,9 @@ app.post('/modificarCodigoErpCliente', requirePermission('cfo', 'crearProveedorC
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Modificó el Código ERP a "${codigoTrim}"`,
-            referencia: codigoTrim
+            referencia: codigoTrim,
+            antes: { Codigo: codigoAnterior || "—" },
+            despues: { Codigo: codigoTrim }
         });
 
         return res.status(200).json({ Message: "Código ERP modificado con éxito", Data: data });
@@ -2992,6 +3052,13 @@ app.post('/eliminarCodigoErpCliente', requirePermission('cfo', 'crearProveedorCl
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
+
+        // Solo para la bitácora: el Código antes de eliminarlo.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Codigo] FROM [dbo].[CodigoErp] WHERE [Id] = @id`);
+        const codigoAnterior = actual.recordset[0]?.Codigo;
 
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CodigoErp/Delete", {
             method: "POST",
@@ -3022,7 +3089,9 @@ app.post('/eliminarCodigoErpCliente', requirePermission('cfo', 'crearProveedorCl
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: "Eliminó un Código ERP de Cliente",
-            referencia: Id
+            referencia: codigoAnterior || Id,
+            antes: { Codigo: codigoAnterior || "—" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Código ERP eliminado con éxito", Data: data });
@@ -3480,6 +3549,13 @@ app.post('/asignarMonedaProveedorCfo', requirePermission('cfo', 'crearProveedorC
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
 
+        // Solo para la bitácora: la Moneda actual antes de reasignarla.
+        const poolAntes = await conexion(BasesDeDatos.CfoNetCore);
+        const actual = await poolAntes.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Moneda_Value] FROM [dbo].[Proveedor] WHERE [Id] = @id`);
+        const monedaAnterior = Object.values(MONEDAS_PROVEEDOR_CFO).find((m) => m.value === actual.recordset[0]?.Moneda_Value);
+
         const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetMoneda", {
             method: "POST",
             headers: {
@@ -3507,7 +3583,9 @@ app.post('/asignarMonedaProveedorCfo', requirePermission('cfo', 'crearProveedorC
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Asignó la Moneda "${moneda.label}" al Proveedor en CFO`,
-            referencia: Id
+            referencia: Id,
+            antes: { Moneda: monedaAnterior?.label || "—" },
+            despues: { Moneda: moneda.label }
         });
 
         return res.status(200).json({ Message: "Moneda asignada con éxito", Data: data });
@@ -3701,6 +3779,19 @@ app.post('/asignarOficialSolicitudDePagoProveedorCfo', requirePermission('cfo', 
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
 
+        // Solo para la bitácora: el Oficial actual y el nuevo, por nombre (no el GUID).
+        const poolAntes = await conexion(BasesDeDatos.CfoNetCore);
+        const nombres = await poolAntes.request()
+            .input('proveedorId', sql.UniqueIdentifier, ProveedorId)
+            .input('nuevoId', sql.UniqueIdentifier, OficialSolicitudDePagoId)
+            .query(`
+                SELECT
+                    (SELECT op.[Nombre] FROM [dbo].[Proveedor] p LEFT JOIN [dbo].[Operador] op ON op.[Id] = p.[OficialSolicitudDePagoId] WHERE p.[Id] = @proveedorId) AS Anterior,
+                    (SELECT [Nombre] FROM [dbo].[Operador] WHERE [Id] = @nuevoId) AS Nuevo
+            `);
+        const oficialAnterior = nombres.recordset[0]?.Anterior;
+        const oficialNuevo = nombres.recordset[0]?.Nuevo;
+
         const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetOficialSolicitudDePago", {
             method: "POST",
             headers: {
@@ -3723,7 +3814,9 @@ app.post('/asignarOficialSolicitudDePagoProveedorCfo', requirePermission('cfo', 
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: "Asignó el Oficial de Solicitud de Pago al Proveedor en CFO",
-            referencia: ProveedorId
+            referencia: ProveedorId,
+            antes: { Oficial: oficialAnterior || "—" },
+            despues: { Oficial: oficialNuevo || "—" }
         });
 
         return res.status(200).json({ Message: "Oficial de Solicitud de Pago asignado con éxito" });
@@ -3748,6 +3841,19 @@ app.post('/asignarOficialDePagoProveedorCfo', requirePermission('cfo', 'crearPro
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
 
+        // Solo para la bitácora: el Oficial actual y el nuevo, por nombre (no el GUID).
+        const poolAntes = await conexion(BasesDeDatos.CfoNetCore);
+        const nombres = await poolAntes.request()
+            .input('proveedorId', sql.UniqueIdentifier, ProveedorId)
+            .input('nuevoId', sql.UniqueIdentifier, OficialDePagoId)
+            .query(`
+                SELECT
+                    (SELECT op.[Nombre] FROM [dbo].[Proveedor] p LEFT JOIN [dbo].[Operador] op ON op.[Id] = p.[OficialDePagoId] WHERE p.[Id] = @proveedorId) AS Anterior,
+                    (SELECT [Nombre] FROM [dbo].[Operador] WHERE [Id] = @nuevoId) AS Nuevo
+            `);
+        const oficialAnterior = nombres.recordset[0]?.Anterior;
+        const oficialNuevo = nombres.recordset[0]?.Nuevo;
+
         const resp = await fetch("https://cfows.azurewebsites.net/api/Proveedor/SetOficialDePago", {
             method: "POST",
             headers: {
@@ -3770,7 +3876,9 @@ app.post('/asignarOficialDePagoProveedorCfo', requirePermission('cfo', 'crearPro
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: "Asignó el Oficial de Pago al Proveedor en CFO",
-            referencia: ProveedorId
+            referencia: ProveedorId,
+            antes: { Oficial: oficialAnterior || "—" },
+            despues: { Oficial: oficialNuevo || "—" }
         });
 
         return res.status(200).json({ Message: "Oficial de Pago asignado con éxito" });
@@ -4320,6 +4428,13 @@ app.post('/modificarCuentaBancoNumero', requirePermission('cfo', 'crearProveedor
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
 
+        // Solo para la bitácora: el Banco/Número actuales antes de modificarlos.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Numero], [BancoNombre] FROM [dbo].[CuentaBancoPersona] WHERE [Id] = @id`);
+        const cuentaAnterior = actual.recordset[0];
+
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/ModificarBancoIdNombreYNumero", {
             method: "POST",
             headers: {
@@ -4341,6 +4456,19 @@ app.post('/modificarCuentaBancoNumero', requirePermission('cfo', 'crearProveedor
             return res.status(400).json({ Message: mensajeDeAzure(data) || "El servicio externo rechazó la solicitud." });
         }
 
+        // El formulario manda Número y Banco juntos siempre (vienen precargados), así
+        // que solo se incluye en la bitácora el que realmente cambió de valor.
+        const antesCuenta = {};
+        const despuesCuenta = {};
+        if ((cuentaAnterior?.Numero || "") !== numeroTrim) {
+            antesCuenta.Numero = cuentaAnterior?.Numero || "—";
+            despuesCuenta.Numero = numeroTrim;
+        }
+        if ((cuentaAnterior?.BancoNombre || "") !== bancoNombreTrim) {
+            antesCuenta.Banco = cuentaAnterior?.BancoNombre || "—";
+            despuesCuenta.Banco = bancoNombreTrim;
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -4349,7 +4477,9 @@ app.post('/modificarCuentaBancoNumero', requirePermission('cfo', 'crearProveedor
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Modificó la Cuenta de Banco a "${numeroTrim}" (${bancoNombreTrim})`,
-            referencia: Id
+            referencia: Id,
+            antes: antesCuenta,
+            despues: despuesCuenta
         });
 
         return res.status(200).json({ Message: "Cuenta de Banco modificada con éxito" });
@@ -4374,6 +4504,14 @@ app.post('/modificarCuentaBancoTipoPersonaDestino', requirePermission('cfo', 'cr
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
+
+        // Solo para la bitácora: el Tipo Persona Destino actual antes de modificarlo.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [TipoPersonaDestino] FROM [dbo].[CuentaBancoPersona] WHERE [Id] = @id`);
+        const tipoAnterior = Object.values(TIPO_PERSONA_DESTINO_CUENTA_BANCO)
+            .find((t) => t.valorCreate === actual.recordset[0]?.TipoPersonaDestino);
 
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/ModificarTipoPersonaDestino", {
             method: "POST",
@@ -4404,7 +4542,9 @@ app.post('/modificarCuentaBancoTipoPersonaDestino', requirePermission('cfo', 'cr
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Modificó el Tipo Persona Destino de la Cuenta de Banco a "${tipoPersonaDestino.label}"`,
-            referencia: Id
+            referencia: Id,
+            antes: { TipoPersonaDestino: tipoAnterior?.label || "—" },
+            despues: { TipoPersonaDestino: tipoPersonaDestino.label }
         });
 
         return res.status(200).json({ Message: "Tipo Persona Destino modificado con éxito" });
@@ -4425,6 +4565,13 @@ app.post('/eliminarCuentaBancoPersona', requirePermission('cfo', 'crearProveedor
         if (!ModifiedBy) {
             return res.status(400).json({ Message: "El usuario que autoriza (ModifiedBy) es requerido." });
         }
+
+        // Solo para la bitácora: el Banco/Número antes de eliminarla.
+        const poolPersonas = await conexion(BasesDeDatos.Personas);
+        const actual = await poolPersonas.request()
+            .input('id', sql.UniqueIdentifier, Id)
+            .query(`SELECT [Numero], [BancoNombre] FROM [dbo].[CuentaBancoPersona] WHERE [Id] = @id`);
+        const cuentaAnterior = actual.recordset[0];
 
         const resp = await fetch("https://personasapi.vesta-accelerate.com/api/CuentaBancoPersonaService/Delete", {
             method: "POST",
@@ -4455,7 +4602,9 @@ app.post('/eliminarCuentaBancoPersona', requirePermission('cfo', 'crearProveedor
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: "Eliminó una Cuenta de Banco",
-            referencia: Id
+            referencia: cuentaAnterior?.Numero || Id,
+            antes: { Numero: cuentaAnterior?.Numero || "—", Banco: cuentaAnterior?.BancoNombre || "—" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Cuenta de Banco eliminada con éxito" });
@@ -4775,6 +4924,26 @@ app.post('/modificarLineaMaterial', requirePermission('cfo', 'eliminarModificarL
         if (Costo !== undefined && Costo !== null && Costo !== "") body.Costo = Number(Costo);
         if (MonedaValue !== undefined && MonedaValue !== null && MonedaValue !== "") body.Currency_Value = Number(MonedaValue);
 
+        // Solo para la bitácora: Valor/Costo/Moneda actuales antes de modificarlos, y la
+        // ReferenciaOperativa del Sales Order (la que se usa en el día a día), no el Id crudo.
+        const tablaPorTipo = { fijo: "LineaMaterialFlat", variable: "LineaMaterialVariable" };
+        let lineaAnterior = null;
+        try {
+            const poolAntes = await conexion(BasesDeDatos.CfoNetCore);
+            const consultaAntes = await poolAntes.request()
+                .input('id', sql.UniqueIdentifier, Id)
+                .query(`
+                    SELECT L.[Valor], L.[Costo], L.[Currency_Value], SO.[ReferenciaOperativa]
+                    FROM [dbo].[${tablaPorTipo[Tipo]}] L
+                    JOIN [dbo].[SalesOrderDetalle] SD ON SD.[Id] = L.[SalesOrderDetalleId]
+                    JOIN [dbo].[SalesOrder] SO ON SO.[Id] = SD.[SalesOrderId]
+                    WHERE L.[Id] = @id
+                `);
+            lineaAnterior = consultaAntes.recordset[0];
+        } catch {
+            // Si falla, la bitácora solo queda sin el "antes"; no se interrumpe la respuesta.
+        }
+
         const resp = await fetch(tipo.url, {
             method: "POST",
             headers: {
@@ -4796,6 +4965,24 @@ app.post('/modificarLineaMaterial', requirePermission('cfo', 'eliminarModificarL
             return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
+        // El formulario manda Valor/Costo/Moneda siempre (son precargados con el valor
+        // actual), así que no basta con ver si se mandó -- solo se incluye en la
+        // bitácora el dato que de verdad cambió de valor.
+        const antesLinea = {};
+        const despuesLinea = {};
+        if (body.Valor !== undefined && Number(lineaAnterior?.Valor) !== body.Valor) {
+            antesLinea.Valor = lineaAnterior?.Valor ?? "—";
+            despuesLinea.Valor = body.Valor;
+        }
+        if (body.Costo !== undefined && Number(lineaAnterior?.Costo) !== body.Costo) {
+            antesLinea.Costo = lineaAnterior?.Costo ?? "—";
+            despuesLinea.Costo = body.Costo;
+        }
+        if (body.Currency_Value !== undefined && Number(lineaAnterior?.Currency_Value) !== body.Currency_Value) {
+            antesLinea.Moneda = monedaLineaMaterialLabel(lineaAnterior?.Currency_Value);
+            despuesLinea.Moneda = monedaLineaMaterialLabel(body.Currency_Value);
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -4804,8 +4991,10 @@ app.post('/modificarLineaMaterial', requirePermission('cfo', 'eliminarModificarL
             moduloKey: "eliminarModificarLineaMaterial",
             moduloLabel: "Eliminar y Modificar Línea Material",
             accion: `Modificó ${tipo.label}`,
-            referencia: Id,
-            motivo: Observacion
+            referencia: lineaAnterior?.ReferenciaOperativa || Id,
+            motivo: Observacion,
+            antes: antesLinea,
+            despues: despuesLinea
         });
 
         return res.status(200).json({ Message: `${tipo.label} modificado con éxito`, Data: data });
@@ -4832,6 +5021,19 @@ app.post('/eliminarLineaMaterial', requirePermission('cfo', 'eliminarModificarLi
         }
         if (!Observacion || !Observacion.trim()) {
             return res.status(400).json({ Message: "Debe indicar la observación (motivo de la eliminación)." });
+        }
+
+        // Solo para la bitácora: la Descripción de la Línea antes de eliminarla.
+        const tablaPorTipo = { fijo: "LineaMaterialFlat", variable: "LineaMaterialVariable" };
+        let descripcionAnterior = null;
+        try {
+            const poolAntes = await conexion(BasesDeDatos.CfoNetCore);
+            const consultaAntes = await poolAntes.request()
+                .input('id', sql.UniqueIdentifier, Id)
+                .query(`SELECT [Descripcion] FROM [dbo].[${tablaPorTipo[Tipo]}] WHERE [Id] = @id`);
+            descripcionAnterior = consultaAntes.recordset[0]?.Descripcion;
+        } catch {
+            // Si falla, la bitácora solo queda sin la descripción; no se interrumpe la respuesta.
         }
 
         const resp = await fetch(tipo.url, {
@@ -4863,8 +5065,10 @@ app.post('/eliminarLineaMaterial', requirePermission('cfo', 'eliminarModificarLi
             moduloKey: "eliminarModificarLineaMaterial",
             moduloLabel: "Eliminar y Modificar Línea Material",
             accion: `Eliminó ${tipo.label}`,
-            referencia: Id,
-            motivo: Observacion
+            referencia: descripcionAnterior || Id,
+            motivo: Observacion,
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: `${tipo.label} eliminado con éxito`, Data: data });
@@ -4977,7 +5181,9 @@ app.post('/eliminarLineasMaterial', requirePermission('cfo', 'eliminarModificarL
                 moduloLabel: "Eliminar y Modificar Línea Material",
                 accion: `Eliminó ${idsEliminadosAhora.length} ${tipo.label}(s) en lote`,
                 referencia: idsEliminadosAhora.join(", "),
-                motivo: Observacion
+                motivo: Observacion,
+                antes: { Estado: "Activo" },
+                despues: { Estado: "Eliminado" }
             });
         }
 
@@ -5607,7 +5813,9 @@ app.post('/docProvisionalEliminarCreado', requirePermission('cfo', 'crearDocumen
             moduloLabel: "Crear Documentos (Post Facturación)",
             accion: "Eliminó Documento recién creado (creado por error)",
             referencia: referenciaOperativa || DocumentoId,
-            motivo: Observacion
+            motivo: Observacion,
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Documento eliminado con éxito", Data: data });
@@ -5937,7 +6145,9 @@ app.post('/eliminarEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'
             moduloLabel: "Crear Especie Fiscal",
             accion: `Eliminó ${ids.length} Especie(s) Fiscal(es)`,
             referencia: ids.join(", "),
-            motivo: observacionTrim
+            motivo: observacionTrim,
+            antes: { Estado: "Activo" },
+            despues: { Estado: "Eliminado" }
         });
 
         return res.status(200).json({ Message: "Especie(s) Fiscal(es) eliminada(s) con éxito", Data: data });

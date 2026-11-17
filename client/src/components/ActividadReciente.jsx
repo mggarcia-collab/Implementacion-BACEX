@@ -10,10 +10,12 @@ const formatoFecha = new Intl.DateTimeFormat("es-HN", {
   minute: "2-digit",
 });
 
-function formatearFecha(sqliteDateUtc) {
-  // SQLite guarda datetime('now') en UTC sin indicarlo con "Z"; hay que agregarlo
-  // para que el navegador no lo interprete como hora local y muestre la fecha mal.
-  const fecha = new Date(sqliteDateUtc.replace(" ", "T") + "Z");
+function formatearFecha(valorFecha) {
+  // SQL Server (Bitacora real) ya manda ISO con "T" y "Z"; el respaldo local en
+  // SQLite guarda "YYYY-MM-DD HH:MM:SS" sin zona, así que solo a ese formato hay
+  // que agregarle la "Z" para que el navegador no lo interprete como hora local.
+  const texto = String(valorFecha);
+  const fecha = texto.includes("T") ? new Date(texto) : new Date(texto.replace(" ", "T") + "Z");
   return formatoFecha.format(fecha);
 }
 

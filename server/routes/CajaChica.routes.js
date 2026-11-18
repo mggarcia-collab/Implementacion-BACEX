@@ -172,7 +172,13 @@ app.post('/cajaChicaCrearPersona', requirePermission('cfo', 'cajaChica'), async 
             moduloKey: "cajaChica",
             moduloLabel: "Caja Chica",
             accion: `Creó la Persona "${nombreTrim} ${apellidoTrim}" en Personas`,
-            referencia: nombreUsuarioTrim
+            referencia: nombreUsuarioTrim,
+            despues: {
+                Nombre: `${nombreTrim} ${apellidoTrim}`,
+                "Id Fiscal": idFiscalTrim,
+                Cargo: cargoTrim,
+                "Correo/Usuario": nombreUsuarioTrim
+            }
         });
 
         return res.status(200).json({ Message: "Persona creada con éxito", Data: data });
@@ -365,7 +371,8 @@ app.post('/cajaChicaCrearCodigoErp', requirePermission('cfo', 'cajaChica'), asyn
             moduloKey: "cajaChica",
             moduloLabel: "Caja Chica",
             accion: `Creó el Código ERP "${codigoTrim}" (${pais.descripcion})`,
-            referencia: codigoTrim
+            referencia: codigoTrim,
+            despues: { "Código ERP": codigoTrim, "País/Sociedad": pais.descripcion }
         });
 
         return res.status(200).json({
@@ -587,7 +594,13 @@ app.post('/cajaChicaCrear', requirePermission('cfo', 'cajaChica'), async (req, r
             moduloKey: "cajaChica",
             moduloLabel: "Caja Chica",
             accion: `Creó la Caja Chica "${descripcionTrim}" para ${duenioTrim}`,
-            referencia: duenioTrim
+            referencia: duenioTrim,
+            despues: {
+                Descripción: descripcionTrim,
+                Dueño: duenioTrim,
+                Fondo: fondoNum,
+                Moneda: MonedaDisplayName || MONEDA_DISPLAY_NAME[MonedaValue] || String(MonedaValue)
+            }
         });
 
         // La respuesta de Azure no garantiza un campo de Id estable (ver mismo criterio en

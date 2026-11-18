@@ -491,6 +491,34 @@ app.post('/materialesNegCrearValor', requirePermission('cfo', 'materialesNegocia
             return res.status(400).json({ Message: data.Exception?.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
+        // Solo para la bitácora: el nombre real del Material y del Componente en vez de sus
+        // Ids crudos (que no dicen nada al leer el reporte después).
+        let nombreMaterial = null;
+        let codigoErpMaterial = null;
+        let descripcionComponente = null;
+        try {
+            const poolNombres = await conexion(BasesDeDatos.CfoNetCore);
+            const tablaSegmento = Tipo === "Variable" ? "MaterialVariableSegmento" : "MaterialFlatSegmento";
+            const tablaMaterial = Tipo === "Variable" ? "MaterialVariable" : "MaterialFlat";
+            const campoMaterialId = Tipo === "Variable" ? "MaterialVariableId" : "MaterialFlatId";
+            const [segmentoRes, componenteRes] = await Promise.all([
+                poolNombres.request().input('id', sql.UniqueIdentifier, SegmentoId).query(`
+                    SELECT MS.CodigoErp, M.Descripcion
+                    FROM [dbo].[${tablaSegmento}] MS
+                    LEFT JOIN [dbo].[${tablaMaterial}] M ON M.Id = MS.${campoMaterialId}
+                    WHERE MS.Id = @id
+                `),
+                poolNombres.request().input('id', sql.UniqueIdentifier, ComponenteId).query(`
+                    SELECT Descripcion FROM [dbo].[Componente] WHERE Id = @id
+                `),
+            ]);
+            nombreMaterial = segmentoRes.recordset[0]?.Descripcion || null;
+            codigoErpMaterial = segmentoRes.recordset[0]?.CodigoErp || null;
+            descripcionComponente = componenteRes.recordset[0]?.Descripcion || null;
+        } catch {
+            // Si falla, la bitácora solo se queda sin los nombres; no se interrumpe la respuesta.
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -498,8 +526,15 @@ app.post('/materialesNegCrearValor', requirePermission('cfo', 'materialesNegocia
             areaLabel: "CFO",
             moduloKey: "materialesNegociacion",
             moduloLabel: "Materiales en Negociación",
-            accion: `Agregó Material ${Tipo} (Segmento ${SegmentoId}) al Componente ${ComponenteId}, Valor ${valorNum}, Costo ${costoNum}`,
-            referencia: ComponenteId
+            accion: `Agregó el Material ${Tipo} "${nombreMaterial || SegmentoId}" al Componente "${descripcionComponente || ComponenteId}"`,
+            referencia: ComponenteId,
+            despues: {
+                Material: nombreMaterial || "—",
+                "Código ERP": codigoErpMaterial || "—",
+                Componente: descripcionComponente || "—",
+                Valor: valorNum,
+                Costo: costoNum
+            }
         });
 
         // El Id recién creado (data.Message.Id, confirmado contra una respuesta real de Azure) se
@@ -568,6 +603,26 @@ app.post('/materialesNegCrearEscala', requirePermission('cfo', 'materialesNegoci
             return res.status(400).json({ Message: data.Exception?.Message || mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
+        // Solo para la bitácora: a qué Material (y Componente) pertenece esta Escala, en vez
+        // de dejar solo el Id crudo del MaterialVariableValor.
+        let nombreMaterial = null;
+        let descripcionComponente = null;
+        try {
+            const poolNombres = await conexion(BasesDeDatos.CfoNetCore);
+            const resNombre = await poolNombres.request().input('id', sql.UniqueIdentifier, MaterialVariableValorId).query(`
+                SELECT MF.Descripcion AS NombreMaterial, C.Descripcion AS ComponenteDescripcion
+                FROM [dbo].[MaterialVariableValor] MVV
+                JOIN [dbo].[MaterialVariableSegmento] MS ON MS.Id = MVV.MaterialVariableSegmentoId
+                JOIN [dbo].[MaterialVariable] MF ON MF.Id = MS.MaterialVariableId
+                LEFT JOIN [dbo].[Componente] C ON C.Id = MVV.ComponenteId
+                WHERE MVV.Id = @id
+            `);
+            nombreMaterial = resNombre.recordset[0]?.NombreMaterial || null;
+            descripcionComponente = resNombre.recordset[0]?.ComponenteDescripcion || null;
+        } catch {
+            // Si falla, la bitácora solo se queda sin el nombre; no se interrumpe la respuesta.
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -575,8 +630,16 @@ app.post('/materialesNegCrearEscala', requirePermission('cfo', 'materialesNegoci
             areaLabel: "CFO",
             moduloKey: "materialesNegociacion",
             moduloLabel: "Materiales en Negociación",
-            accion: `Agregó Escala (${Operador} ${cotaNum} → ${valorNum}, Orden ${ordenNum}) al Material Variable Valor ${MaterialVariableValorId}`,
-            referencia: MaterialVariableValorId
+            accion: `Agregó Escala (${Operador} ${cotaNum} → ${valorNum}, Orden ${ordenNum}) al Material "${nombreMaterial || MaterialVariableValorId}"`,
+            referencia: descripcionComponente || MaterialVariableValorId,
+            despues: {
+                Material: nombreMaterial || "—",
+                Componente: descripcionComponente || "—",
+                Operador,
+                Cota: cotaNum,
+                Valor: valorNum,
+                Orden: ordenNum
+            }
         });
 
         return res.status(200).json({ Message: "Escala agregada con éxito", Data: data });

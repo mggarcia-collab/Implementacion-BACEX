@@ -83,14 +83,53 @@ body {
 }
 
 .brand {
-  font-size: 18px;
-  font-weight: 600;
-  color: white;
-  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.brand span {
+.brand-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.04));
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.3), 0 3px 8px rgba(0, 0, 0, 0.25);
   color: #ffe1c2;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.brand-name {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  background: linear-gradient(135deg, #ffffff 35%, #ffe1c2 120%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+
+.brand-subtitle {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.78);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(255, 225, 194, 0.45);
+  width: 100%;
 }
 
 .topbar-hamburger {
@@ -218,7 +257,7 @@ body {
 /* SIDEBAR */
 
 .sidebar {
-  width: 250px;
+  width: 260px;
   /* height/min-height explícitos (no solo "stretch" implícito del flex row padre): sin esto,
      el overflow-y de abajo puede no activarse de verdad y la lista de módulos queda más alta
      que la pantalla sin poder bajar hasta el final con scroll. */
@@ -1093,6 +1132,15 @@ body {
   color: var(--text-main);
   outline: none;
   transition: var(--transition);
+}
+
+/* El login usa el azul de marca en vez del rojo global de .field:focus, que choca con
+   el resto de la pantalla (Vesta/IMS son azules, el rojo queda solo para acciones de riesgo). */
+.login-card .field input:focus,
+.login-card .field select:focus,
+.login-card .field textarea:focus {
+  border-color: var(--vesta-pink) !important;
+  box-shadow: 0 0 0 3px rgba(91, 143, 185, 0.18) !important;
 }
 
 .field input:focus,

@@ -171,7 +171,18 @@ function AppShell() {
       <header className="topbar" style={{ display: "grid", gridTemplateColumns: "260px 1fr 260px", alignItems: "center", height: "70px" }}>
         <div className="topbar-left" style={{ position: "relative", display: "flex", alignItems: "center", height: "100%", paddingLeft: "20px" }}>
           <button className="topbar-hamburger" style={{ position: "relative", zIndex: 1 }} onClick={() => setSidebarOpen((prev) => !prev)} title={sidebarOpen ? "Ocultar módulos" : "Mostrar módulos"}>☰</button>
-          <span className="brand" style={{ position: "absolute", left: 0, right: 0, textAlign: "center", pointerEvents: "none" }}>SIS<span>TEC</span></span>
+          <div className="brand" style={{ position: "absolute", left: 0, right: 0, justifyContent: "center", pointerEvents: "none" }}>
+            <div className="brand-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2 3 6v6c0 5 3.8 8.4 9 10 5.2-1.6 9-5 9-10V6l-9-4Z" />
+                <path d="M8.5 12.5h2l1.3-2.6 1.4 4.6 1.3-2h1.5" />
+              </svg>
+            </div>
+            <div className="brand-text">
+              <span className="brand-name">IMS</span>
+              <span className="brand-subtitle">Incident Management System</span>
+            </div>
+          </div>
         </div>
         <div className="topbar-center" style={{ justifySelf: "center" }}>
           <button className="topbar-home" onClick={handleExitModule} title="Ir al inicio">

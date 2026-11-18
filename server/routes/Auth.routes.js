@@ -148,7 +148,8 @@ router.put("/usuarios/:id/oficinas", requireAuth, requireAdmin, (req, res) => {
         moduloKey: "usuarios",
         moduloLabel: "Usuarios",
         accion: (oficinas || []).length > 0 ? `Restringió a ${(oficinas || []).length} Oficina(s) de Venta` : "Quitó la restricción por Oficina de Venta",
-        referencia: usuario?.nombre_completo || ""
+        referencia: usuario?.nombre_completo || "",
+        despues: { "Oficinas permitidas": (oficinas || []).length > 0 ? oficinas.join(", ") : "Todas (sin restricción)" }
     });
 
     res.json({ Message: "ok", oficinasPermitidas: obtenerOficinasPermitidas(usuarioId) });
@@ -186,7 +187,13 @@ router.post("/usuarios", requireAuth, requireAdmin, async (req, res) => {
             moduloKey: "usuarios",
             moduloLabel: "Usuarios",
             accion: "Creó usuario",
-            referencia: nombreCompleto.trim()
+            referencia: nombreCompleto.trim(),
+            despues: {
+                Usuario: nombreUsuario.trim(),
+                Correo: correo?.trim() || "—",
+                "Es administrador": isAdmin ? "Sí" : "No",
+                Permisos: (permisos || []).length > 0 ? `${permisos.length} módulo(s)` : "Ninguno"
+            }
         });
 
         return res.status(201).json({ Message: "Usuario creado con éxito", Id: usuarioId });
@@ -257,7 +264,8 @@ router.put("/usuarios/:id/password", requireAuth, requireAdmin, async (req, res)
             moduloKey: "usuarios",
             moduloLabel: "Usuarios",
             accion: "Cambió contraseña",
-            referencia: usuario.nombre_completo
+            referencia: usuario.nombre_completo,
+            despues: { Acción: "Contraseña restablecida" }
         });
 
         return res.json({ Message: "Contraseña actualizada con éxito" });

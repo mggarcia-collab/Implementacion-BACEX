@@ -259,7 +259,9 @@ app.post('/habilitarSalesOrder', requirePermission('cfo', 'salesorder'), async (
             moduloKey: "salesorder",
             moduloLabel: "Habilitar SalesOrder",
             accion: "Habilitó Sales Order",
-            referencia: ReferenciaOperativa
+            referencia: ReferenciaOperativa,
+            antes: { Estado: "No entregada" },
+            despues: { Estado: "Habilitada" }
         });
 
         return res.status(200).json({ Message: "Sales Order Habilitada con éxito", Data: data });
@@ -1593,7 +1595,13 @@ app.post('/crearDocumentoProvisionalNic', requirePermission('cfo', 'docProvision
             moduloKey: "docProvisionalNic",
             moduloLabel: "Documento Provisional NIC (Proveedores)",
             accion: "Creó Documento Provisional NIC",
-            referencia: ReferenciaOperativa
+            referencia: ReferenciaOperativa,
+            despues: {
+                Cantidad: DOCUMENTO_PROVISIONAL_NIC.Cantidad,
+                "Precio Venta": DOCUMENTO_PROVISIONAL_NIC.PrecioVenta,
+                Impuesto: DOCUMENTO_PROVISIONAL_NIC.Impuesto,
+                Total: DOCUMENTO_PROVISIONAL_NIC.Total
+            }
         });
 
         return res.status(200).json({ Message: "Documento Provisional creado con éxito", Data: data });
@@ -2363,7 +2371,8 @@ app.post('/crearCuadrilla', requirePermission('cfo', 'cuadrilla'), async (req, r
             moduloKey: "cuadrilla",
             moduloLabel: "Cuadrilla",
             accion: `Creó Cuadrilla (${{ 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)]}, Aduana ${aduana.label})`,
-            referencia: ReferenciaOperativa
+            referencia: ReferenciaOperativa,
+            despues: { Escala: { 1: "Muestreo", 2: "Parcial", 3: "Completa" }[Number(Parametro)], Aduana: aduana.label }
         });
 
         return res.status(200).json({ Message: "Documento Provisional + Línea Material creado con éxito", Data: data });
@@ -2613,7 +2622,8 @@ app.post('/crearProveedor', requirePermission('cfo', 'crearProveedorCliente'), a
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Proveedor "${nombreTrim}" (${pais.descripcion})`,
-            referencia: idFiscalTrim
+            referencia: idFiscalTrim,
+            despues: { Nombre: nombreTrim, "Id Fiscal": idFiscalTrim, "País": pais.descripcion }
         });
 
         // La respuesta de Azure no garantiza un campo de Id estable; se vuelve a consultar por
@@ -2713,7 +2723,8 @@ app.post('/crearCliente', requirePermission('cfo', 'crearProveedorCliente'), asy
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Cliente "${nombreTrim}" (${pais.descripcion})`,
-            referencia: idFiscalTrim
+            referencia: idFiscalTrim,
+            despues: { Nombre: nombreTrim, "Id Fiscal": idFiscalTrim, "País": pais.descripcion }
         });
 
         // La respuesta de Azure no garantiza un campo de Id estable; se vuelve a consultar por
@@ -2855,7 +2866,8 @@ app.post('/crearCodigoErpProveedor', requirePermission('cfo', 'crearProveedorCli
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Código ERP "${codigoTrim}" (${pais.descripcion})`,
-            referencia: codigoTrim
+            referencia: codigoTrim,
+            despues: { "Código ERP": codigoTrim, "País/Sociedad": pais.descripcion }
         });
 
         return res.status(200).json({
@@ -3141,7 +3153,8 @@ app.post('/crearCodigoErpCliente', requirePermission('cfo', 'crearProveedorClien
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Código ERP "${codigoTrim}" (${pais.descripcion})`,
-            referencia: codigoTrim
+            referencia: codigoTrim,
+            despues: { "Código ERP": codigoTrim, "País/Sociedad": pais.descripcion }
         });
 
         return res.status(200).json({
@@ -3471,7 +3484,8 @@ app.post('/crearSitioCliente', requirePermission('cfo', 'crearProveedorCliente')
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Sitio "${direccionTrim}" (${tipoSitio.descripcion}) para el Cliente "${nombrePersona}"`,
-            referencia: direccionTrim
+            referencia: direccionTrim,
+            despues: { Dirección: direccionTrim, Tipo: tipoSitio.descripcion, Cliente: nombrePersona }
         });
 
         return res.status(200).json({ Message: "Sitio creado con éxito", Data: data });
@@ -3706,7 +3720,8 @@ app.post('/crearProveedorCfo', requirePermission('cfo', 'crearProveedorCliente')
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Proveedor en CFO "${nombre}" (${tenant.label})`,
-            referencia: nombre
+            referencia: nombre,
+            despues: { Nombre: nombre, Tenant: tenant.label }
         });
 
         return res.status(200).json({ Message: "Proveedor creado en CFO con éxito", Data: data });
@@ -3909,7 +3924,8 @@ app.post('/crearClienteCfo', requirePermission('cfo', 'crearProveedorCliente'), 
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Cliente en CFO "${nombre}" (${tenant.label})`,
-            referencia: nombre
+            referencia: nombre,
+            despues: { Nombre: nombre, Tenant: tenant.label }
         });
 
         return res.status(200).json({ Message: "Cliente creado en CFO con éxito", Data: data });
@@ -4136,6 +4152,18 @@ app.post('/agregarSitioProveedorCfo', requirePermission('cfo', 'crearProveedorCl
             return res.status(resp.status).json({ Message: "Error al comunicarse con el servicio externo", Detail: errData });
         }
 
+        // Solo para la bitácora: el nombre del Sitio en vez de su Id crudo.
+        let nombreSitio = null;
+        try {
+            const poolNombre = await conexion(BasesDeDatos.CfoNetCore);
+            const resSitio = await poolNombre.request().input('id', sql.UniqueIdentifier, SitioId).query(`
+                SELECT [Nombre] FROM [dbo].[Sitio] WHERE [Id] = @id
+            `);
+            nombreSitio = resSitio.recordset[0]?.Nombre || null;
+        } catch {
+            // Si falla, la bitácora solo se queda sin el nombre; no se interrumpe la respuesta.
+        }
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -4143,8 +4171,9 @@ app.post('/agregarSitioProveedorCfo', requirePermission('cfo', 'crearProveedorCl
             areaLabel: "CFO",
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
-            accion: "Agregó un Sitio al Proveedor en CFO",
-            referencia: ProveedorId
+            accion: `Agregó el Sitio "${nombreSitio || SitioId}" al Proveedor en CFO`,
+            referencia: ProveedorId,
+            despues: { Sitio: nombreSitio || "—" }
         });
 
         return res.status(200).json({ Message: "Sitio agregado con éxito" });
@@ -4250,7 +4279,8 @@ app.post('/agregarMaterialProveedorCfo', requirePermission('cfo', 'crearProveedo
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Agregó el Material "${descripcionTrim}" (${codigoMaterial}) al Proveedor en CFO`,
-            referencia: PersonaId
+            referencia: PersonaId,
+            despues: { Material: descripcionTrim, "Código": codigoMaterial }
         });
 
         return res.status(200).json({ Message: "Material agregado con éxito", Data: data, CodigoMaterial: codigoMaterial });
@@ -4325,7 +4355,8 @@ app.post('/crearMaterialTenant', requirePermission('cfo', 'crearProveedorCliente
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Material Tenant "${descripcionTrim}" (${tenant.label})`,
-            referencia: `${cuentaMayorTrim} / ${codigoErpTrim}`
+            referencia: `${cuentaMayorTrim} / ${codigoErpTrim}`,
+            despues: { Material: descripcionTrim, Tenant: tenant.label, "Cuenta Mayor": cuentaMayorTrim, "Código ERP": codigoErpTrim }
         });
 
         return res.status(200).json({
@@ -4509,7 +4540,8 @@ app.post('/crearBanco', requirePermission('cfo', 'crearProveedorCliente'), async
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó el Banco "${nombreTrim}" (${pais.descripcion})`,
-            referencia: nombreTrim
+            referencia: nombreTrim,
+            despues: { Banco: nombreTrim, "País": pais.descripcion }
         });
 
         return res.status(200).json({ Message: "Banco creado con éxito", Id: bancoId, Nombre: nombreTrim, PaisDescripcion: pais.descripcion });
@@ -4592,7 +4624,8 @@ app.post('/crearCuentaBancoPersona', requirePermission('cfo', 'crearProveedorCli
             moduloKey: "crearProveedorCliente",
             moduloLabel: "Crear Proveedor / Cliente",
             accion: `Creó la Cuenta de Banco "${numeroTrim}" (${bancoNombreTrim})`,
-            referencia: PersonaId
+            referencia: PersonaId,
+            despues: { "Número de Cuenta": numeroTrim, Banco: bancoNombreTrim, "Tipo de Cuenta": tipoCuenta.descripcion, Moneda: moneda.codigo }
         });
 
         return res.status(200).json({ Message: "Cuenta de Banco creada con éxito", Data: data });
@@ -5091,6 +5124,39 @@ app.post('/agregarLineaMaterial', requirePermission('cfo', 'eliminarModificarLin
             return res.status(400).json({ Message: mensajeDeAzure(data) || "Azure rechazó la solicitud." });
         }
 
+        // Solo para la bitácora: el nombre de cada Material agregado, en vez de solo el conteo
+        // (los Ids de Segmento no dicen nada al leer el reporte después).
+        let nombresFlat = [];
+        let nombresVariable = [];
+        try {
+            const poolNombres = await conexion(BasesDeDatos.CfoNetCore);
+            if (flatIds.length > 0) {
+                const reqFlat = poolNombres.request();
+                flatIds.forEach((id, i) => reqFlat.input(`f${i}`, sql.UniqueIdentifier, id));
+                const resFlat = await reqFlat.query(`
+                    SELECT MF.[Descripcion]
+                    FROM [dbo].[MaterialFlatSegmento] MS
+                    JOIN [dbo].[MaterialFlat] MF ON MF.[Id] = MS.[MaterialFlatId]
+                    WHERE MS.[Id] IN (${flatIds.map((_, i) => `@f${i}`).join(", ")})
+                `);
+                nombresFlat = resFlat.recordset.map((r) => r.Descripcion);
+            }
+            if (variableIds.length > 0) {
+                const reqVar = poolNombres.request();
+                variableIds.forEach((id, i) => reqVar.input(`v${i}`, sql.UniqueIdentifier, id));
+                const resVar = await reqVar.query(`
+                    SELECT MF.[Descripcion]
+                    FROM [dbo].[MaterialVariableSegmento] MS
+                    JOIN [dbo].[MaterialVariable] MF ON MF.[Id] = MS.[MaterialVariableId]
+                    WHERE MS.[Id] IN (${variableIds.map((_, i) => `@v${i}`).join(", ")})
+                `);
+                nombresVariable = resVar.recordset.map((r) => r.Descripcion);
+            }
+        } catch {
+            // Si falla, la bitácora solo se queda sin los nombres; no se interrumpe la respuesta.
+        }
+        const nombresTodos = [...nombresFlat, ...nombresVariable];
+
         registrarActividad({
             usuarioId: req.user.id,
             usuarioNombre: req.user.nombreCompleto,
@@ -5098,8 +5164,9 @@ app.post('/agregarLineaMaterial', requirePermission('cfo', 'eliminarModificarLin
             areaLabel: "CFO",
             moduloKey: "eliminarModificarLineaMaterial",
             moduloLabel: "Eliminar y Modificar Línea Material",
-            accion: `Agregó ${flatIds.length + variableIds.length} material(es) (${flatIds.length} fijo(s), ${variableIds.length} variable(s))`,
-            referencia: referenciaTrim
+            accion: `Agregó ${flatIds.length + variableIds.length} material(es) (${flatIds.length} fijo(s), ${variableIds.length} variable(s)): ${nombresTodos.join(", ") || "sin nombre disponible"}`,
+            referencia: referenciaTrim,
+            despues: { Materiales: nombresTodos.join(", ") || "—" }
         });
 
         return res.status(200).json({ Message: "Material(es) agregado(s) con éxito", Data: data });
@@ -5750,7 +5817,8 @@ app.post('/crearDocumentoProvisionalPostFacturacion', requirePermission('cfo', '
             moduloKey: "crearDocumentosPostFacturacion",
             moduloLabel: "Crear Documentos (Post Facturación)",
             accion: `Creó Documento Provisional (${pais.label})`,
-            referencia: referenciaTrim
+            referencia: referenciaTrim,
+            despues: { Cantidad: cantidadNum, "Precio Venta": precioVentaNum, Impuesto: impuestoNum, Total: total }
         });
 
         return res.status(200).json({ Message: "Documento Provisional creado con éxito", Data: data });
@@ -5881,7 +5949,8 @@ app.post('/crearDocumentoFiscalPostFacturacion', requirePermission('cfo', 'crear
             moduloKey: "crearDocumentosPostFacturacion",
             moduloLabel: "Crear Documentos (Post Facturación)",
             accion: `Creó Documento Fiscal (${pais.label})`,
-            referencia: referenciaTrim
+            referencia: referenciaTrim,
+            despues: { Cantidad: cantidadNum, "Precio Venta": precioVentaNum, Impuesto: impuestoNum, Total: total, "N° Documento Fiscal": numeroDocumentoFiscalTrim }
         });
 
         return res.status(200).json({ Message: "Documento Fiscal creado con éxito", Data: data });
@@ -5993,7 +6062,8 @@ app.post('/crearDocumentoInternoPostFacturacion', requirePermission('cfo', 'crea
             moduloKey: "crearDocumentosPostFacturacion",
             moduloLabel: "Crear Documentos (Post Facturación)",
             accion: `Creó Documento Interno (${pais.label})`,
-            referencia: referenciaTrim
+            referencia: referenciaTrim,
+            despues: { Cantidad: cantidadNum, "Precio Venta": precioVentaNum, Impuesto: impuestoNum, Total: total }
         });
 
         return res.status(200).json({ Message: "Documento Interno creado con éxito", Data: data });
@@ -6245,7 +6315,8 @@ app.post('/crearEspecieFiscal', requirePermission('cfo', 'crearEspecieFiscal'), 
             moduloKey: "crearEspecieFiscal",
             moduloLabel: "Crear Especie Fiscal",
             accion: `Creó Especie Fiscal (${ESPECIES_FISCALES[especieFiscalIdUpper]})`,
-            referencia: referenciaTrim
+            referencia: referenciaTrim,
+            despues: { "Especie Fiscal": ESPECIES_FISCALES[especieFiscalIdUpper], Cantidad: cantidadNum }
         });
 
         return res.status(200).json({ Message: "Especie Fiscal creada con éxito", Data: data });

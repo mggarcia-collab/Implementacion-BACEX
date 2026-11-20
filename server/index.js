@@ -96,7 +96,12 @@ app.use('/api', corsOptions, negociacionMaterialesRoutes);
 // documenta cfows en https://cfows.azurewebsites.net/swagger/index.html. Va antes del
 // catch-all de abajo porque "/swagger" no empieza con "/api" y, si no, la pantalla del
 // cliente web se lo comería primero.
-app.use('/swagger', swaggerUi.serve, swaggerUi.setup(openapiSpec));
+// swagger-ui-express sirve, dentro de sus archivos estáticos, su PROPIO index.html genérico
+// (sin nuestro contrato, apunta de ejemplo a Swagger Petstore). Si alguien entra por la URL
+// exacta ".../swagger/index.html" (como en cfows), ese archivo estático la intercepta antes
+// de llegar a swaggerUi.setup(). Por eso esta ruta exacta va primero, así gana siempre.
+app.get('/swagger/index.html', swaggerUi.setup(openapiSpec));
+app.use('/swagger', swaggerUi.serveFiles(openapiSpec));
 
 // En producción, el mismo servidor sirve el build del cliente (client/dist), evitando
 // tener que desplegar y configurar dos servicios/dominios separados.

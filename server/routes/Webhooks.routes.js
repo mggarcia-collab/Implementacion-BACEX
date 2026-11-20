@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { resolverUsuarioIdPorCorreo, crearAlerta } from "../database/authDb.js";
+import { resolverUsuarioIdPorCorreo, crearAlerta, registrarActividad } from "../database/authDb.js";
 
 const app = Router();
 
@@ -33,6 +33,44 @@ app.post("/webhooks/nuevoTicket", (req, res) => {
         titulo: "🎫 Nuevo ticket de Incidentes",
         mensaje: asunto ? String(asunto).trim() : "Se generó un nuevo ticket en Incidentes de Sistemas.",
         referencia: referencia ? String(referencia).trim() : (asunto ? String(asunto).trim() : null),
+    });
+
+    res.json({ Message: "ok" });
+});
+
+// Permite que OTRO sistema (fuera de IMS) deje su propio registro en nuestra Bitácora
+// (RegistroActividades.dbo.Bitacora). Ruta y cuerpo en PascalCase para seguir la misma
+// convención de las APIs que el equipo de sistemas nos comparte a nosotros (cfows:
+// /api/<Entidad>/<Accion>, body en PascalCase, sin más que Content-Type: application/json).
+// A diferencia de esas, esta sí queda protegida con un secreto propio por header: cfows
+// vive dentro de la red de Azure del equipo de sistemas, pero IMS expone esta ruta en
+// un dominio público, así que sin secreto cualquiera podría escribir en la Bitácora.
+// No pasa por requireAuth porque quien llama no tiene sesión de IMS.
+app.post("/Bitacora/Create", async (req, res) => {
+    const secretoEsperado = process.env.BITACORA_WEBHOOK_SECRET;
+    const secretoRecibido = req.headers["x-webhook-secret"] || req.query.secret;
+    if (!secretoEsperado || secretoRecibido !== secretoEsperado) {
+        return res.status(401).json({ Message: "No autorizado." });
+    }
+
+    const { Sistema, Accion, Referencia, Motivo, Antes, Despues } = req.body || {};
+    if (!Sistema || !Accion) {
+        return res.status(400).json({ Message: "Faltan campos requeridos: 'Sistema' y 'Accion'." });
+    }
+
+    const sistemaTrim = String(Sistema).trim();
+    await registrarActividad({
+        usuarioId: null,
+        usuarioNombre: sistemaTrim,
+        areaKey: "integraciones",
+        areaLabel: "Integraciones Externas",
+        moduloKey: sistemaTrim.toLowerCase().replace(/\s+/g, "_"),
+        moduloLabel: sistemaTrim,
+        accion: String(Accion).trim(),
+        referencia: Referencia ? String(Referencia).trim() : null,
+        motivo: Motivo ? String(Motivo).trim() : null,
+        antes: Antes ?? null,
+        despues: Despues ?? null,
     });
 
     res.json({ Message: "ok" });

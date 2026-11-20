@@ -19,6 +19,7 @@
     "jsonwebtoken": "^9.0.3",
     "mssql": "^12.5.5",
     "nodemailer": "^10.0.13",
+    "swagger-ui-express": "^5.0.1",
     "undici": "^8.12.3"
   }
 }

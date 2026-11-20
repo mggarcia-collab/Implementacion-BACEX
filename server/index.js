@@ -3,7 +3,9 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
+import swaggerUi from 'swagger-ui-express'
 import { Agent, setGlobalDispatcher, fetch as undiciFetch } from 'undici'
+import { openapiSpec } from './docs/openapiSpec.js'
 
 // El fetch() global NATIVO de Node (el que usan todas las rutas sin importar nada especial)
 // no comparte dispatcher con el paquete "undici" instalado aparte -- setGlobalDispatcher()
@@ -88,6 +90,13 @@ app.use('/api', corsOptions, seguimientoRoutes);
 app.use('/api', corsOptions, actividadRoutes);
 app.use('/api', corsOptions, cajaChicaRoutes);
 app.use('/api', corsOptions, negociacionMaterialesRoutes);
+
+// Documentación Swagger de los métodos que IMS expone para que OTROS sistemas se integren
+// con nosotros (ej. /api/Bitacora/Create), igual al estilo en que el equipo de sistemas
+// documenta cfows en https://cfows.azurewebsites.net/swagger/index.html. Va antes del
+// catch-all de abajo porque "/swagger" no empieza con "/api" y, si no, la pantalla del
+// cliente web se lo comería primero.
+app.use('/swagger', swaggerUi.serve, swaggerUi.setup(openapiSpec));
 
 // En producción, el mismo servidor sirve el build del cliente (client/dist), evitando
 // tener que desplegar y configurar dos servicios/dominios separados.

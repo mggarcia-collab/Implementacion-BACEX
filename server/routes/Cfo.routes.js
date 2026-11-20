@@ -1119,6 +1119,13 @@ app.post('/documentosParaRedondeo', requirePermission('cfo', 'redondeo'), async 
         if (listaSps.length === 0) {
             return res.status(400).json({ Message: "El número de Solicitud de Pago (SP) es requerido." });
         }
+        // sp.[Unique] es bigint en la base; si se manda tal cual un valor no numérico, SQL Server
+        // truena al convertir ("Error converting data type varchar to bigint") y se ve como un
+        // error de servidor genérico. Se valida aquí para dar un mensaje claro en su lugar.
+        const spNoNumerico = listaSps.find((valor) => !/^\d+$/.test(valor));
+        if (spNoNumerico) {
+            return res.status(400).json({ Message: `El número de SP "${spNoNumerico}" no es válido. Debe contener solo números.` });
+        }
 
         const pool = await conexion(BasesDeDatos.CfoNetCore);
         const request = pool.request();

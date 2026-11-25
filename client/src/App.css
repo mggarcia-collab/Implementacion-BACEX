@@ -398,6 +398,11 @@ body {
   color: white;
 }
 
+.mod-icon.teal {
+  background: linear-gradient(135deg, #0f766e 0%, #2dd4bf 100%);
+  color: white;
+}
+
 .mod-name strong {
   color: var(--text-main);
   font-weight: 600;

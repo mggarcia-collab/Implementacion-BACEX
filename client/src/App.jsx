@@ -5,6 +5,7 @@ import { ToastProvider } from "./components/Toast.jsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.jsx";
 import Login from "./auth/Login.jsx";
 import AdminUsuarios, { meta as adminUsuariosMeta } from "./auth/AdminUsuarios.jsx";
+import AdminRolesPermisos, { meta as adminRolesPermisosMeta } from "./auth/AdminRolesPermisos.jsx";
 import AdminBitacora, { meta as adminBitacoraMeta } from "./auth/AdminBitacora.jsx";
 import ActividadReciente from "./components/ActividadReciente.jsx";
 import AlertasCampana from "./components/AlertasCampana.jsx";
@@ -29,6 +30,7 @@ const adminArea = {
   label: "Administración",
   modules: {
     usuarios: { ...adminUsuariosMeta, Component: AdminUsuarios },
+    rolesPermisos: { ...adminRolesPermisosMeta, Component: AdminRolesPermisos },
   },
 };
 
@@ -236,6 +238,9 @@ function AppShell() {
               {visibleAreas.errores25 && (
                 <div className="mod-icon red" style={{ cursor: "pointer" }} title="Errores" onClick={() => handleRailClick("errores25")}>⚠️</div>
               )}
+              {visibleAreas.hojaDeRuta && (
+                <div className="mod-icon teal" style={{ cursor: "pointer" }} title="Hoja de Ruta" onClick={() => handleRailClick("hojaDeRuta")}>🗺️</div>
+              )}
               {usuario.isAdmin && (
                 <div className="mod-icon amber" style={{ cursor: "pointer" }} title="Administración" onClick={() => handleRailClick(ADMIN_KEY)}>👤</div>
               )}
@@ -292,6 +297,17 @@ function AppShell() {
                 <div className="mod-chevron" style={{ transform: expandedAreas.has("errores25") ? "rotate(0deg)" : "rotate(-90deg)" }}>▾</div>
               </div>
               {expandedAreas.has("errores25") && renderSubmodulos("errores25", visibleAreas.errores25)}
+            </div>
+          )}
+
+          {visibleAreas.hojaDeRuta && (
+            <div>
+              <div className={`mod-item m-hojaDeRuta${activeArea === "hojaDeRuta" ? " active" : ""}`} onClick={() => toggleAreaExpand("hojaDeRuta")}>
+                <div className="mod-icon teal">🗺️</div>
+                <div className="mod-name"><strong>Hoja de Ruta</strong><span>Trámites y gestiones</span></div>
+                <div className="mod-chevron" style={{ transform: expandedAreas.has("hojaDeRuta") ? "rotate(0deg)" : "rotate(-90deg)" }}>▾</div>
+              </div>
+              {expandedAreas.has("hojaDeRuta") && renderSubmodulos("hojaDeRuta", visibleAreas.hojaDeRuta)}
             </div>
           )}
 

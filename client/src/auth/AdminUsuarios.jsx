@@ -1,80 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { apiFetch } from "../apiClient.js";
-import { areas } from "../areas/index.js";
 import { useToast } from "../components/Toast.jsx";
 import PasswordField from "../components/PasswordField.jsx";
-
-function permisoKey(area, modulo) {
-  return `${area}:${modulo}`;
-}
-
-// Para la bitácora: nombres legibles de los módulos de cada permiso, uno por línea.
-// El área no se incluye aquí -- la columna "Área" de la bitácora ya muestra
-// "Administración" para esta actividad, igual que para cualquier otra.
-function formatearPermisosParaBitacora(permisosList) {
-  if (!permisosList || permisosList.length === 0) return "—";
-  const modulos = permisosList.map((p) => areas[p.area]?.modules?.[p.modulo]?.label || p.modulo);
-  return modulos.join("\n");
-}
-
-// Botón de acción de solo ícono: el nombre de la acción se ve al pasar el mouse
-// (title nativo del navegador) en vez de texto siempre visible junto al ícono.
-function IconButton({ title, onClick, bg, fg, children }) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      style={{
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        width: "32px", height: "32px", borderRadius: "8px", border: "none", cursor: "pointer",
-        background: bg, color: fg, flexShrink: 0
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-const IconPencil = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
-  </svg>
-);
-const IconShield = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-  </svg>
-);
-const IconLock = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="10" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-  </svg>
-);
-const IconUserPlus = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
-    <path d="M19 8v6M22 11h-6" />
-  </svg>
-);
-const IconUserMinus = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
-    <path d="M22 11h-6" />
-  </svg>
-);
-const IconPower = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" />
-  </svg>
-);
-const IconTrash = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-  </svg>
-);
+import {
+  IconButton, IconPencil, IconLock, IconUserPlus, IconUserMinus, IconPower, IconTrash
+} from "./permisosCompartido.jsx";
 
 // Busca en vivo contra la BD de Personas mientras se escribe el nombre completo, y al
 // elegir una coincidencia llena también el correo y guarda el Id real (personaId) que
@@ -154,102 +84,10 @@ function PersonaBuscador({ nombre, onChangeNombre, onSeleccionar, disabled }) {
   );
 }
 
-function PermisosChecklist({ selected, onChange, disabled }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-      {Object.entries(areas).map(([areaKey, area]) => (
-        <div key={areaKey}>
-          <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", marginBottom: "6px" }}>
-            {area.icon} {area.label}
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
-            {Object.entries(area.modules).map(([moduloKey, modulo]) => {
-              const key = permisoKey(areaKey, moduloKey);
-              return (
-                <label key={key} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#334155" }}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(key)}
-                    disabled={disabled}
-                    onChange={(e) => onChange(areaKey, moduloKey, e.target.checked)}
-                  />
-                  {modulo.label}
-                </label>
-              );
-            })}
-          </div>
-          {/* Sub-permisos: capacidades extra DENTRO de un módulo (ej. "poder modificar" vs
-              solo "poder ver"), no son una pantalla aparte así que no viven en area.modules. */}
-          {Object.entries(area.modules)
-            .filter(([, modulo]) => modulo.subPermiso)
-            .map(([moduloKey, modulo]) => {
-              const subKey = permisoKey(areaKey, modulo.subPermiso.key);
-              return (
-                <label key={subKey} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#697386", marginTop: "6px", marginLeft: "16px" }}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(subKey)}
-                    disabled={disabled}
-                    onChange={(e) => onChange(areaKey, modulo.subPermiso.key, e.target.checked)}
-                  />
-                  {modulo.label} — {modulo.subPermiso.label}
-                </label>
-              );
-            })}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Lista de Aduanas a las que está restringido un usuario. Sin ninguna marcada significa "sin
-// restricción" (ve todas, igual que hoy) -- se avisa en el propio checklist para que no
-// parezca un bloqueo total por accidente.
-function OficinasChecklist({ catalogo, selected, onChange, disabled }) {
-  const [filtro, setFiltro] = useState("");
-  const filtrado = filtro.trim()
-    ? catalogo.filter((o) => o.label.toLowerCase().includes(filtro.trim().toLowerCase()))
-    : catalogo;
-
-  return (
-    <div>
-      <p style={{ fontSize: "12px", color: "#697386", marginBottom: "8px" }}>
-        Sin ninguna marcada, el usuario ve Referencias Operativas de <strong>todas</strong> las Aduanas (sin restricción).
-        Marcando una o varias, solo verá las de esas Aduanas.
-      </p>
-      <input
-        type="text"
-        placeholder="Filtrar por nombre..."
-        value={filtro}
-        onChange={(e) => setFiltro(e.target.value)}
-        disabled={disabled}
-        style={{ width: "260px", padding: "6px 10px", fontSize: "12.5px", border: "1px solid #dcdfe6", borderRadius: "6px", marginBottom: "10px" }}
-      />
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", maxHeight: "220px", overflowY: "auto", border: "1px solid #eef1f5", borderRadius: "8px", padding: "10px" }}>
-        {catalogo.length === 0 && <span style={{ fontSize: "12.5px", color: "#94a3b8" }}>Cargando catálogo de Aduanas...</span>}
-        {filtrado.map((o) => (
-          <label key={o.clave} title={o.label} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#334155", width: "260px" }}>
-            <input
-              type="checkbox"
-              checked={selected.has(o.clave)}
-              disabled={disabled}
-              style={{ flexShrink: 0 }}
-              onChange={(e) => onChange(o.clave, e.target.checked)}
-            />
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-              {o.label}
-            </span>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export const meta = {
   label: "Usuarios",
   icon: "👤",
-  desc: "Crea usuarios y define a qué módulos tiene acceso cada uno",
+  desc: "Crea usuarios y administra sus cuentas",
 };
 
 export default function AdminUsuarios() {
@@ -263,15 +101,7 @@ export default function AdminUsuarios() {
   const [personaId, setPersonaId] = useState("");
   const [password, setPassword] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
-  const [permisos, setPermisos] = useState(() => new Set());
-  const [oficinas, setOficinas] = useState(() => new Set());
   const [creando, setCreando] = useState(false);
-
-  const [editingUserId, setEditingUserId] = useState(null);
-  const [editingPermisos, setEditingPermisos] = useState(() => new Set());
-  const [editingOficinas, setEditingOficinas] = useState(() => new Set());
-  const [savingPermisos, setSavingPermisos] = useState(false);
-  const [catalogoOficinas, setCatalogoOficinas] = useState([]);
 
   const [editingPasswordUserId, setEditingPasswordUserId] = useState(null);
   const [nuevaPassword, setNuevaPassword] = useState("");
@@ -302,40 +132,12 @@ export default function AdminUsuarios() {
 
   useEffect(() => {
     cargarUsuarios();
-    // Catálogo para el checklist de "Oficinas permitidas" -- se carga una sola vez, no
-    // cambia mientras se editan usuarios.
-    (async () => {
-      try {
-        const response = await apiFetch("/auth/aduanas");
-        const data = await response.json().catch(() => []);
-        if (response.ok) setCatalogoOficinas(Array.isArray(data) ? data : []);
-      } catch {
-        // Si falla, el checklist se queda vacío/"Cargando..." -- no bloquea el resto de la pantalla.
-      }
-    })();
   }, []);
 
   const handleSeleccionarPersona = (persona) => {
     setNombreCompleto(persona.nombre);
     setCorreo(persona.correo || "");
     setPersonaId(persona.id);
-  };
-
-  const togglePermiso = (area, modulo, checked) => {
-    setPermisos((prev) => {
-      const next = new Set(prev);
-      const key = permisoKey(area, modulo);
-      if (checked) next.add(key); else next.delete(key);
-      return next;
-    });
-  };
-
-  const toggleOficina = (oficinaVenta, checked) => {
-    setOficinas((prev) => {
-      const next = new Set(prev);
-      if (checked) next.add(oficinaVenta); else next.delete(oficinaVenta);
-      return next;
-    });
   };
 
   const limpiarFormulario = () => {
@@ -345,8 +147,6 @@ export default function AdminUsuarios() {
     setPersonaId("");
     setPassword("");
     setIsAdmin(false);
-    setPermisos(new Set());
-    setOficinas(new Set());
   };
 
   const handleCrear = async (e) => {
@@ -357,10 +157,6 @@ export default function AdminUsuarios() {
     }
     setCreando(true);
     try {
-      const permisosArray = [...permisos].map((key) => {
-        const [area, modulo] = key.split(":");
-        return { area, modulo };
-      });
       const response = await apiFetch("/auth/usuarios", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -370,9 +166,7 @@ export default function AdminUsuarios() {
           correo: correo.trim(),
           personaId,
           password,
-          isAdmin,
-          permisos: permisosArray,
-          oficinas: [...oficinas]
+          isAdmin
         })
       });
       const data = await response.json().catch(() => null);
@@ -387,82 +181,6 @@ export default function AdminUsuarios() {
       showToast("⚠️ Error de conexión con el servidor", "warn");
     } finally {
       setCreando(false);
-    }
-  };
-
-  const toggleEditingPermiso = (area, modulo, checked) => {
-    setEditingPermisos((prev) => {
-      const next = new Set(prev);
-      const key = permisoKey(area, modulo);
-      if (checked) next.add(key); else next.delete(key);
-      return next;
-    });
-  };
-
-  const abrirEdicionPermisos = (usuario) => {
-    setEditingUserId(usuario.id);
-    setEditingPermisos(new Set(usuario.permisos.map((p) => permisoKey(p.area, p.modulo))));
-    setEditingOficinas(new Set(usuario.oficinasPermitidas || []));
-  };
-
-  const cancelarEdicionPermisos = () => {
-    setEditingUserId(null);
-    setEditingPermisos(new Set());
-    setEditingOficinas(new Set());
-  };
-
-  const toggleEditingOficina = (oficinaVenta, checked) => {
-    setEditingOficinas((prev) => {
-      const next = new Set(prev);
-      if (checked) next.add(oficinaVenta); else next.delete(oficinaVenta);
-      return next;
-    });
-  };
-
-  // Guarda permisos de módulo y Oficinas permitidas juntos (un solo botón en pantalla),
-  // aunque sean dos endpoints distintos -- evita que quede ambiguo cuál de los dos quedó
-  // guardado si solo uno fallara.
-  const guardarPermisos = async (usuarioId) => {
-    setSavingPermisos(true);
-    try {
-      const permisosArray = [...editingPermisos].map((key) => {
-        const [area, modulo] = key.split(":");
-        return { area, modulo };
-      });
-      // Solo para la bitácora: nombres legibles del antes (lo que tenía al abrir la
-      // edición) y el después (lo que queda marcado ahora).
-      const usuarioActual = usuarios.find((u) => u.id === usuarioId);
-      const antesPermisos = formatearPermisosParaBitacora(usuarioActual?.permisos);
-      const despuesPermisos = formatearPermisosParaBitacora(permisosArray);
-      const oficinasArray = [...editingOficinas];
-
-      const [respPermisos, respOficinas] = await Promise.all([
-        apiFetch(`/auth/usuarios/${usuarioId}/permisos`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ permisos: permisosArray, antesPermisos, despuesPermisos })
-        }),
-        apiFetch(`/auth/usuarios/${usuarioId}/oficinas`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oficinas: oficinasArray })
-        })
-      ]);
-      const dataPermisos = await respPermisos.json().catch(() => null);
-      const dataOficinas = await respOficinas.json().catch(() => null);
-      if (!respPermisos.ok || !respOficinas.ok) {
-        showToast((!respPermisos.ok ? dataPermisos?.Message : dataOficinas?.Message) || "No se pudieron actualizar los accesos", "warn");
-        return;
-      }
-      setUsuarios((prev) => prev.map((u) => (
-        u.id === usuarioId ? { ...u, permisos: permisosArray, oficinasPermitidas: oficinasArray.length > 0 ? oficinasArray : null } : u
-      )));
-      showToast("✓ Accesos actualizados", "ok");
-      cancelarEdicionPermisos();
-    } catch (error) {
-      showToast("⚠️ Error de conexión con el servidor", "warn");
-    } finally {
-      setSavingPermisos(false);
     }
   };
 
@@ -592,7 +310,7 @@ export default function AdminUsuarios() {
     <div className="form-wrap" style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: "none" }}>
       <div style={{ borderBottom: "1px solid #eaeaea", paddingBottom: "15px", marginBottom: "25px" }}>
         <div className="form-title" style={{ fontSize: "22px", fontWeight: "700", color: "#1a1f36" }}>Administración de Usuarios</div>
-        <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>Crea usuarios y define a qué módulos tiene acceso cada uno</div>
+        <div className="form-sub" style={{ color: "#697386", marginTop: "4px" }}>Crea usuarios y administra sus cuentas</div>
       </div>
 
       <form onSubmit={handleCrear} style={{ background: "#f8f9fa", padding: "20px", borderRadius: "8px", border: "1px solid #e3e8ee", marginBottom: "30px" }}>
@@ -626,23 +344,9 @@ export default function AdminUsuarios() {
           </div>
         </div>
 
-        {!isAdmin && (
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Módulos permitidos
-            </label>
-            <PermisosChecklist selected={permisos} onChange={togglePermiso} disabled={creando} />
-          </div>
-        )}
-
-        {!isAdmin && (
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", color: "#4f5b66", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              Aduanas permitidas
-            </label>
-            <OficinasChecklist catalogo={catalogoOficinas} selected={oficinas} onChange={toggleOficina} disabled={creando} />
-          </div>
-        )}
+        <p style={{ fontSize: "12px", color: "#697386", marginBottom: "16px" }}>
+          Los módulos y Aduanas a los que tendrá acceso se asignan después, desde Administración → Módulos y Aduanas.
+        </p>
 
         <button className="btn primary" type="submit" disabled={creando}>
           {creando ? "Creando..." : "Crear usuario"}
@@ -692,13 +396,6 @@ export default function AdminUsuarios() {
                         onClick={() => (editingPerfilUserId === u.id ? cancelarEdicionPerfil() : abrirEdicionPerfil(u))}
                       >
                         <IconPencil />
-                      </IconButton>
-                      <IconButton
-                        title={editingUserId === u.id ? "Cerrar edición de permisos" : "Editar permisos"}
-                        bg="#e0e7ff" fg="#4338ca"
-                        onClick={() => (editingUserId === u.id ? cancelarEdicionPermisos() : abrirEdicionPermisos(u))}
-                      >
-                        <IconShield />
                       </IconButton>
                       <IconButton
                         title={editingPasswordUserId === u.id ? "Cerrar cambio de contraseña" : "Cambiar contraseña"}
@@ -751,28 +448,6 @@ export default function AdminUsuarios() {
                             {savingPerfil ? "Guardando..." : "Guardar perfil"}
                           </button>
                           <button className="btn ghost" onClick={cancelarEdicionPerfil} disabled={savingPerfil} style={{ padding: "6px 14px", fontSize: "12px" }}>
-                            Cancelar
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                  {editingUserId === u.id && (
-                    <tr>
-                      <td colSpan={7} style={{ background: "#f8f9fa", padding: "18px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", marginBottom: "12px" }}>
-                          Permisos de {u.nombreCompleto}
-                        </div>
-                        <PermisosChecklist selected={editingPermisos} onChange={toggleEditingPermiso} disabled={savingPermisos} />
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#4f5b66", textTransform: "uppercase", marginTop: "20px", marginBottom: "12px" }}>
-                          Aduanas permitidas
-                        </div>
-                        <OficinasChecklist catalogo={catalogoOficinas} selected={editingOficinas} onChange={toggleEditingOficina} disabled={savingPermisos} />
-                        <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
-                          <button className="btn primary" onClick={() => guardarPermisos(u.id)} disabled={savingPermisos} style={{ padding: "6px 14px", fontSize: "12px" }}>
-                            {savingPermisos ? "Guardando..." : "Guardar accesos"}
-                          </button>
-                          <button className="btn ghost" onClick={cancelarEdicionPermisos} disabled={savingPermisos} style={{ padding: "6px 14px", fontSize: "12px" }}>
                             Cancelar
                           </button>
                         </div>
